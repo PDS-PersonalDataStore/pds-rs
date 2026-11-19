@@ -1,8 +1,12 @@
+use crate::auth::ClientId;
 use crate::blob::{BlobError, BlobStore};
 use crate::change::Change;
 use crate::dag::{DagError, HistoryDag};
 use crate::id::ChangeId;
 use crate::state::DatasetState;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -19,11 +23,19 @@ pub enum StorageError {
     Blob(#[from] BlobError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCursor {
+    pub client_id: ClientId,
+    pub last_ack_change_id: Option<ChangeId>,
+    pub updated_at: DateTime<Utc>,
+}
+
 pub struct DiskStorage {
     root_dir: PathBuf,
     dag: HistoryDag,
     state: DatasetState,
     blobs: BlobStore,
+    cursors: BTreeMap<ClientId, ClientCursor>,
 }
 
 impl DiskStorage {
@@ -39,9 +51,11 @@ impl DiskStorage {
             dag: HistoryDag::new(),
             state: DatasetState::new(),
             blobs,
+            cursors: BTreeMap::new(),
         };
 
         storage.load_history()?;
+        storage.load_cursors()?;
         Ok(storage)
     }
 
@@ -108,6 +122,48 @@ impl DiskStorage {
     pub fn get_change(&self, id: &ChangeId) -> Option<&Change> {
         self.dag.get(id)
     }
+
+    fn cursors_file_path(&self) -> PathBuf {
+        self.root_dir.join("client_cursors.json")
+    }
+
+    fn load_cursors(&mut self) -> Result<(), StorageError> {
+        let path = self.cursors_file_path();
+        if !path.exists() {
+            return Ok(());
+        }
+        let data = fs::read_to_string(path)?;
+        if data.trim().is_empty() {
+            return Ok(());
+        }
+        self.cursors = serde_json::from_str(&data)?;
+        Ok(())
+    }
+
+    fn save_cursors(&self) -> Result<(), StorageError> {
+        let path = self.cursors_file_path();
+        let serialized = serde_json::to_string_pretty(&self.cursors)?;
+        fs::write(path, serialized)?;
+        Ok(())
+    }
+
+    pub fn get_client_cursor(&self, client_id: &ClientId) -> Option<ChangeId> {
+        self.cursors.get(client_id).and_then(|c| c.last_ack_change_id)
+    }
+
+    pub fn set_client_cursor(
+        &mut self,
+        client_id: ClientId,
+        change_id: Option<ChangeId>,
+    ) -> Result<(), StorageError> {
+        let cursor = ClientCursor {
+            client_id,
+            last_ack_change_id: change_id,
+            updated_at: Utc::now(),
+        };
+        self.cursors.insert(client_id, cursor);
+        self.save_cursors()
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +212,27 @@ mod tests {
                 entity.get_property(&"name".into()),
                 Some(&PropertyValue::from("Specyfikacja"))
             );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_client_cursor_persistence() {
+        let temp_dir = std::env::temp_dir().join(format!("pds_cursor_test_{}", EntityId::new()));
+        let client_id = ClientId::new();
+        let change_id = ChangeId::new();
+
+        {
+            let mut storage = DiskStorage::open(&temp_dir).unwrap();
+            assert_eq!(storage.get_client_cursor(&client_id), None);
+            storage.set_client_cursor(client_id, Some(change_id)).unwrap();
+            assert_eq!(storage.get_client_cursor(&client_id), Some(change_id));
+        }
+
+        {
+            let storage = DiskStorage::open(&temp_dir).unwrap();
+            assert_eq!(storage.get_client_cursor(&client_id), Some(change_id));
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
