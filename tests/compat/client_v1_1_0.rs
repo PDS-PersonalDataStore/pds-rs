@@ -29,8 +29,11 @@ pub fn blind_change_metadata(
     nonce: [u8; 12],
     auth_tag: [u8; 16],
 ) -> ChangeMetadata {
-    ChangeMetadata::new(device_id)
-        .with_encryption_mode(EncryptionMode::BlindChange { key_id, nonce, auth_tag })
+    ChangeMetadata::new(device_id).with_encryption_mode(EncryptionMode::BlindChange {
+        key_id,
+        nonce,
+        auth_tag,
+    })
 }
 
 /// Returns `true` if the JSON payload contains the `encryption_mode` field.

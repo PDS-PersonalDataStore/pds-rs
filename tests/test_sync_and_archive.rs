@@ -1,6 +1,6 @@
 use pds::{
-    BinaryCodec, BlobDescriptor, BlobId, Change, ChangeId, ChangeMetadata, EntityId,
-    HistoryDag, Operation, PdsArchive, SyncEngine, SyncMessage,
+    BinaryCodec, BlobDescriptor, BlobId, Change, ChangeId, ChangeMetadata, EntityId, HistoryDag,
+    Operation, PdsArchive, SyncEngine, SyncMessage,
 };
 
 #[test]
@@ -57,7 +57,9 @@ fn test_sync_between_two_disconnected_nodes() {
 
     let resp_from_b = SyncEngine::handle_request(&node_b_dag, &known_by_a);
     let missing_for_a = match resp_from_b {
-        SyncMessage::SyncResponse { missing_changes, .. } => missing_changes,
+        SyncMessage::SyncResponse {
+            missing_changes, ..
+        } => missing_changes,
         _ => panic!("Expected SyncResponse"),
     };
 
@@ -74,7 +76,9 @@ fn test_sync_between_two_disconnected_nodes() {
 
     let resp_from_a = SyncEngine::handle_request(&node_a_dag, &known_by_b);
     let missing_for_b = match resp_from_a {
-        SyncMessage::SyncResponse { missing_changes, .. } => missing_changes,
+        SyncMessage::SyncResponse {
+            missing_changes, ..
+        } => missing_changes,
         _ => panic!("Expected SyncResponse"),
     };
 
@@ -107,8 +111,11 @@ fn test_archive_export_import_and_binary_codec() {
     };
 
     let archive = PdsArchive::new(vec![change], vec![], vec![blob_desc]);
-    let json_dump = archive.to_json().expect("Failed to serialize archive to JSON");
-    let restored_from_json = PdsArchive::from_json(&json_dump).expect("Failed to restore from JSON");
+    let json_dump = archive
+        .to_json()
+        .expect("Failed to serialize archive to JSON");
+    let restored_from_json =
+        PdsArchive::from_json(&json_dump).expect("Failed to restore from JSON");
     assert_eq!(restored_from_json.metadata.change_count, 1);
     assert_eq!(restored_from_json.metadata.blob_count, 1);
 

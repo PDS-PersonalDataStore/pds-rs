@@ -148,7 +148,9 @@ impl DiskStorage {
     }
 
     pub fn get_client_cursor(&self, client_id: &ClientId) -> Option<ChangeId> {
-        self.cursors.get(client_id).and_then(|c| c.last_ack_change_id)
+        self.cursors
+            .get(client_id)
+            .and_then(|c| c.last_ack_change_id)
     }
 
     pub fn set_client_cursor(
@@ -226,7 +228,9 @@ mod tests {
         {
             let mut storage = DiskStorage::open(&temp_dir).unwrap();
             assert_eq!(storage.get_client_cursor(&client_id), None);
-            storage.set_client_cursor(client_id, Some(change_id)).unwrap();
+            storage
+                .set_client_cursor(client_id, Some(change_id))
+                .unwrap();
             assert_eq!(storage.get_client_cursor(&client_id), Some(change_id));
         }
 

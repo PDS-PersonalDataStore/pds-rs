@@ -1,6 +1,4 @@
-use pds::{
-    AccessController, AppRegistration, DiskStorage, PdsClient, Permission, PropertyValue,
-};
+use pds::{AccessController, AppRegistration, DiskStorage, PdsClient, Permission, PropertyValue};
 use std::fs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

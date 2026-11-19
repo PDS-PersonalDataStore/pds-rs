@@ -1,6 +1,6 @@
 use pds::{
-    Change, ChangeId, ChangeMetadata, DatasetState, EntityId, HistoryDag, Operation,
-    PropertyName, PropertyValue, RelationId,
+    Change, ChangeId, ChangeMetadata, DatasetState, EntityId, HistoryDag, Operation, PropertyName,
+    PropertyValue, RelationId,
 };
 
 #[test]

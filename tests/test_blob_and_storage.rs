@@ -64,7 +64,9 @@ fn test_disk_storage_reopen_and_persistence() {
             ],
         );
 
-        storage.append_change(change).expect("Failed to append change");
+        storage
+            .append_change(change)
+            .expect("Failed to append change");
         assert_eq!(storage.change_count(), 1);
 
         let blob_id = BlobId::new();
@@ -79,7 +81,10 @@ fn test_disk_storage_reopen_and_persistence() {
         let storage = DiskStorage::open(&root).expect("Failed to reopen storage");
         assert_eq!(storage.change_count(), 1);
         let restored_change = storage.get_change(&c1_id).expect("Change not found");
-        assert_eq!(restored_change.metadata.author_id.as_deref(), Some("test_author"));
+        assert_eq!(
+            restored_change.metadata.author_id.as_deref(),
+            Some("test_author")
+        );
         assert_eq!(restored_change.metadata.device_id, "device-node-1");
 
         let entity = storage

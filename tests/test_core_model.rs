@@ -71,9 +71,7 @@ fn test_operations_variants() {
         source: e_id,
         target: EntityId::new(),
     };
-    let delete_rel_op = Operation::DeleteRelation {
-        relation_id: r_id,
-    };
+    let delete_rel_op = Operation::DeleteRelation { relation_id: r_id };
     let delete_entity_op = Operation::DeleteEntity { entity_id: e_id };
 
     let operations = vec![
