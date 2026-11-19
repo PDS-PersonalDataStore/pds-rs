@@ -49,6 +49,6 @@ pub use relation::Relation;
 pub use schema::{EntitySchema, PropertyDefinition, PropertyType, SchemaValidationError};
 pub use security::{AccessController, AppRegistration, Permission, SecurityError};
 pub use state::DatasetState;
-pub use storage::{DiskStorage, StorageError};
+pub use storage::{ClientCursor, DiskStorage, SqliteStorage, StorageError};
 pub use sync::{SyncEngine, SyncError, SyncMessage};
 pub use value::{PropertyName, PropertyValue};
