@@ -51,6 +51,17 @@ pub enum IpcRequest {
         since_change_id: Option<ChangeId>,
         limit: Option<usize>,
     },
+    GetPendingChanges {
+        session_id: String,
+        limit: Option<usize>,
+    },
+    AcknowledgeChanges {
+        session_id: String,
+        change_id: ChangeId,
+    },
+    GetClientCursor {
+        session_id: String,
+    },
     CloseSession {
         session_id: String,
     },
@@ -71,6 +82,10 @@ pub enum IpcResponse {
         changes: Vec<Change>,
         latest_change_id: Option<ChangeId>,
     },
+    Cursor(Option<ChangeId>),
+    ChangesAcknowledged {
+        last_ack_change_id: ChangeId,
+    },
     SessionClosed,
     Error(String),
 }
@@ -78,6 +93,7 @@ pub enum IpcResponse {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub session_id: String,
+    pub client_id: crate::auth::ClientId,
     pub permissions: BTreeSet<Permission>,
     pub expires_at: DateTime<Utc>,
     pub peer_pid: Option<u32>,
@@ -154,6 +170,7 @@ impl<'a> IpcServerHandler<'a> {
                 Ok(success) => {
                     self.sessions.insert_session(Session {
                         session_id: success.session_id.clone(),
+                        client_id: success.client_id,
                         permissions: success.permissions.clone(),
                         expires_at: success.expires_at,
                         peer_pid,
@@ -315,6 +332,71 @@ impl<'a> IpcServerHandler<'a> {
                     latest_change_id,
                 }
             }
+            IpcRequest::GetPendingChanges { session_id, limit } => {
+                if let Err(err) =
+                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                let client_id = match self.sessions.get_session(&session_id) {
+                    Some(s) => s.client_id,
+                    None => return IpcResponse::Error("Session not found".into()),
+                };
+                let since_change_id = self.storage.get_client_cursor(&client_id);
+                let topological = self.storage.dag().topological_order();
+                let mut start_collecting = since_change_id.is_none();
+                let mut collected = Vec::new();
+                let max_limit = limit.unwrap_or(100);
+
+                for change in topological {
+                    if start_collecting {
+                        collected.push(change.clone());
+                        if collected.len() >= max_limit {
+                            break;
+                        }
+                    } else if since_change_id.as_ref() == Some(&change.id) {
+                        start_collecting = true;
+                    }
+                }
+                let latest_change_id = collected.last().map(|c| c.id);
+                IpcResponse::Changes {
+                    changes: collected,
+                    latest_change_id,
+                }
+            }
+            IpcRequest::AcknowledgeChanges {
+                session_id,
+                change_id,
+            } => {
+                if let Err(err) =
+                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                let client_id = match self.sessions.get_session(&session_id) {
+                    Some(s) => s.client_id,
+                    None => return IpcResponse::Error("Session not found".into()),
+                };
+                if let Err(err) = self.storage.set_client_cursor(client_id, Some(change_id)) {
+                    return IpcResponse::Error(err.to_string());
+                }
+                IpcResponse::ChangesAcknowledged {
+                    last_ack_change_id: change_id,
+                }
+            }
+            IpcRequest::GetClientCursor { session_id } => {
+                if let Err(err) =
+                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                let client_id = match self.sessions.get_session(&session_id) {
+                    Some(s) => s.client_id,
+                    None => return IpcResponse::Error("Session not found".into()),
+                };
+                let cursor = self.storage.get_client_cursor(&client_id);
+                IpcResponse::Cursor(cursor)
+            }
             IpcRequest::CloseSession { session_id } => {
                 self.sessions.remove_session(&session_id);
                 IpcResponse::SessionClosed
@@ -462,6 +544,30 @@ impl PdsIpcClient {
             since_change_id,
             limit,
         })
+    }
+
+    pub fn get_pending_changes_request(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::GetPendingChanges { session_id, limit })
+    }
+
+    pub fn ack_changes_request(
+        &self,
+        change_id: ChangeId,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::AcknowledgeChanges {
+            session_id,
+            change_id,
+        })
+    }
+
+    pub fn get_cursor_request(&self) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::GetClientCursor { session_id })
     }
 
     pub fn close_session_request(&mut self) -> Result<IpcRequest, IpcClientError> {
@@ -662,6 +768,148 @@ mod tests {
             IpcResponse::SessionClosed
         );
         assert!(client.session_id().is_none());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_pds_ipc_offline_client_reconnect_queue() {
+        let temp_dir = std::env::temp_dir().join(format!("pds_offline_queue_{}", EntityId::new()));
+        let signing_key = SigningKey::from_bytes(&[99u8; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let client_id;
+        let first_change_id;
+
+        // --- Session 1: Client connects, creates 1 entity, ACKs, then disconnects ---
+        {
+            let mut storage = DiskStorage::open(&temp_dir).unwrap();
+            let mut sessions = IpcSessionManager::new();
+            let mut authenticator = ClientAuthenticator::new("pds-node-test");
+
+            client_id = authenticator.register_client("MobileSyncApp", public_key);
+
+            let mut perms = BTreeSet::new();
+            perms.insert(Permission::ReadEntities);
+            perms.insert(Permission::WriteEntities);
+            perms.insert(Permission::ReadHistory);
+            authenticator.approve_client(&client_id, perms);
+
+            let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
+            let mut client = PdsIpcClient::new(client_id, signing_key.clone());
+
+            let challenge = match handler.handle_request(client.start_handshake(vec!["history".into()]), Some(1)) {
+                IpcResponse::Challenge(c) => c,
+                other => panic!("Expected challenge, got {:?}", other),
+            };
+            let success = match handler.handle_request(client.handle_challenge(&challenge), Some(1)) {
+                IpcResponse::Authenticated(s) => s,
+                other => panic!("Expected Authenticated, got {:?}", other),
+            };
+            client.handle_auth_success(&success);
+
+            // Create entity 1
+            let create_req = client.create_entity_request(
+                Some("task".into()),
+                vec![("name".into(), PropertyValue::Text("Zadanie 1".into()))],
+            ).unwrap();
+            handler.handle_request(create_req, Some(1));
+
+            // Initial poll: gets change 1
+            let poll = match handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(1)) {
+                IpcResponse::Changes { changes, latest_change_id } => {
+                    assert_eq!(changes.len(), 1);
+                    first_change_id = latest_change_id;
+                    latest_change_id.unwrap()
+                }
+                other => panic!("Expected Changes, got {:?}", other),
+            };
+
+            // Client acknowledges change 1
+            let ack_req = client.ack_changes_request(poll).unwrap();
+            assert!(matches!(handler.handle_request(ack_req, Some(1)), IpcResponse::ChangesAcknowledged { .. }));
+
+            // Client disconnects and shuts down
+            let close = client.close_session_request().unwrap();
+            handler.handle_request(close, Some(1));
+        }
+
+        // --- Offline period: Changes arrive from network peer while client is disconnected ---
+        {
+            let mut storage = DiskStorage::open(&temp_dir).unwrap();
+            // Simulate 2 changes replicated from remote peer B
+            for i in 2..=3 {
+                let parents = storage.dag().heads().iter().copied().collect();
+                let meta = crate::change::ChangeMetadata::new("peer-node-b")
+                    .with_message(format!("Peer change {i}"));
+                let ops = vec![Operation::CreateEntity {
+                    entity_id: EntityId::new(),
+                    entity_type: Some("remote_doc".into()),
+                }];
+                let c = Change::new(ChangeId::new(), parents, meta, ops);
+                storage.append_change(c).unwrap();
+            }
+            assert_eq!(storage.change_count(), 3);
+        }
+
+        // --- Session 2: Demon PDS reboots, Client wakes up after being offline ---
+        {
+            let mut storage = DiskStorage::open(&temp_dir).unwrap();
+            let mut sessions = IpcSessionManager::new();
+            let mut authenticator = ClientAuthenticator::new("pds-node-test");
+
+            authenticator.insert_client(client_id, "MobileSyncApp", public_key);
+            authenticator.approve_client(&client_id, {
+                let mut perms = BTreeSet::new();
+                perms.insert(Permission::ReadEntities);
+                perms.insert(Permission::WriteEntities);
+                perms.insert(Permission::ReadHistory);
+                perms
+            });
+
+            // Verify cursor was preserved across restarts
+            assert_eq!(storage.get_client_cursor(&client_id), first_change_id);
+
+            let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
+            let mut client = PdsIpcClient::new(client_id, signing_key);
+
+            // Fresh handshake with new session
+            let challenge = match handler.handle_request(client.start_handshake(vec!["history".into()]), Some(2)) {
+                IpcResponse::Challenge(c) => c,
+                other => panic!("Expected challenge, got {:?}", other),
+            };
+            let success = match handler.handle_request(client.handle_challenge(&challenge), Some(2)) {
+                IpcResponse::Authenticated(s) => s,
+                other => panic!("Expected Authenticated, got {:?}", other),
+            };
+            client.handle_auth_success(&success);
+
+            // Check cursor over IPC
+            let cursor_resp = handler.handle_request(client.get_cursor_request().unwrap(), Some(2));
+            assert_eq!(cursor_resp, IpcResponse::Cursor(first_change_id));
+
+            // Client pulls pending queue: receives exactly the 2 changes that arrived while offline!
+            let pending_resp = handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(2));
+            let new_last_id = match pending_resp {
+                IpcResponse::Changes { changes, latest_change_id } => {
+                    assert_eq!(changes.len(), 2, "Must receive exactly the 2 changes from peer while offline");
+                    assert_eq!(changes[0].metadata.device_id, "peer-node-b");
+                    assert_eq!(changes[1].metadata.device_id, "peer-node-b");
+                    latest_change_id.unwrap()
+                }
+                other => panic!("Expected Changes, got {:?}", other),
+            };
+
+            // Client acknowledges all newly caught up changes
+            let ack_resp = handler.handle_request(client.ack_changes_request(new_last_id).unwrap(), Some(2));
+            assert_eq!(ack_resp, IpcResponse::ChangesAcknowledged { last_ack_change_id: new_last_id });
+
+            // Next pull: queue is empty (all caught up)
+            let empty_resp = handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(2));
+            match empty_resp {
+                IpcResponse::Changes { changes, .. } => assert!(changes.is_empty(), "Queue must be empty after full catchup"),
+                other => panic!("Expected Changes, got {:?}", other),
+            }
+        }
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
