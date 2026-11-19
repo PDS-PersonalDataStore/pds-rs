@@ -237,6 +237,50 @@ Po ponownym połączeniu klient pobiera zaległą kolejkę zmian i potwierdza ic
 }
 ```
 
+### Subskrypcja zdarzeń w czasie rzeczywistym (Pub/Sub)
+Klient może zarejestrować subskrypcję na strumień powiadomień push, unikając ciągłego odpytywania (pollingu):
+
+Dostępne tematy (`EventTopic`):
+- `AllChanges`: wszystkie nowe zmiany w grafie DAG (zarówno utworzone lokalnie, jak i nadesłane z innych węzłów przez protokół sieciowy).
+- `EntityChanges`: zmiany modyfikujące encje i ich atrybuty.
+- `RelationChanges`: zmiany modyfikujące relacje między encjami.
+- `BlobCreated`: powiadomienie o zapisaniu nowego pliku binarnego.
+
+1. **Rejestracja subskrypcji (`Subscribe`):**
+```json
+{
+  "action": "Subscribe",
+  "payload": {
+    "session_id": "a9f3b2c1...",
+    "topics": ["AllChanges", "BlobCreated"]
+  }
+}
+```
+**Odpowiedź:**
+```json
+{
+  "status": "Subscribed",
+  "payload": {
+    "topics": ["AllChanges", "BlobCreated"]
+  }
+}
+```
+
+2. **Format powiadomień asynchronicznych (`IpcNotification`):**
+Gdy w PDS pojawia się nowa zmiana (lokalna lub zsynchronizowana od zdalnego peera), PDS pushuje ramkę zdarzenia:
+```json
+{
+  "event": "ChangeAppended",
+  "payload": {
+    "change_id": "01ARZ3NDEKTSV4RRFFQ69G5CHNG",
+    "change": { ... }
+  }
+}
+```
+
+3. **Przesuwanie trwałego kursora po zdarzeniu czasu rzeczywistego:**
+Po otrzymaniu powiadomienia w czasie rzeczywistym klient wysyła `AcknowledgeChanges` z `change_id` ze zdarzenia. PDS natychmiast aktualizuje `client_cursors.json`. Jeśli aplikacja zostanie następnie uśpiona, po ponownym uruchomieniu `GetPendingChanges` nie powtórzy już obsłużonych zdarzeń.
+
 ---
 
 ## 5. Implementacja w Rust (`PdsIpcClient`)
