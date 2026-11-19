@@ -91,10 +91,17 @@ impl EntitySchema {
         Ok(())
     }
 
-    pub fn validate_operation(&self, op: &crate::operation::Operation) -> Result<(), SchemaValidationError> {
+    pub fn validate_operation(
+        &self,
+        op: &crate::operation::Operation,
+    ) -> Result<(), SchemaValidationError> {
         match op {
             crate::operation::Operation::SetEntityProperty { name, value, .. } => {
-                if let Some(def) = self.properties.get(name).filter(|d| !self.matches_type(value, &d.expected_type)) {
+                if let Some(def) = self
+                    .properties
+                    .get(name)
+                    .filter(|d| !self.matches_type(value, &d.expected_type))
+                {
                     Err(SchemaValidationError::TypeMismatch {
                         name: name.clone(),
                         expected: def.expected_type.clone(),

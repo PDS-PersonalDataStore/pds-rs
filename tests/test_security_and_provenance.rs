@@ -18,8 +18,16 @@ fn test_access_controller_granular_permissions() {
     controller.register_app(app);
 
     // Read and Write permitted
-    assert!(controller.check_permission("app_health", &Permission::ReadEntities).is_ok());
-    assert!(controller.check_permission("app_health", &Permission::WriteEntities).is_ok());
+    assert!(
+        controller
+            .check_permission("app_health", &Permission::ReadEntities)
+            .is_ok()
+    );
+    assert!(
+        controller
+            .check_permission("app_health", &Permission::WriteEntities)
+            .is_ok()
+    );
 
     // Blobs not permitted
     assert_eq!(
@@ -45,7 +53,11 @@ fn test_app_revocation_lifecycle() {
     app.grant(Permission::WriteEntities);
 
     controller.register_app(app);
-    assert!(controller.check_permission("app_notes", &Permission::ReadEntities).is_ok());
+    assert!(
+        controller
+            .check_permission("app_notes", &Permission::ReadEntities)
+            .is_ok()
+    );
 
     // Revoke app by registering revoked version
     let mut app_revoked = AppRegistration::new("app_notes", "Notes");
@@ -75,7 +87,10 @@ fn test_activity_provenance_tracking() {
 
     assert_eq!(activity.inputs.len(), 1);
     assert_eq!(activity.outputs.len(), 2);
-    assert_eq!(activity.configuration.get("language").map(String::as_str), Some("pol+eng"));
+    assert_eq!(
+        activity.configuration.get("language").map(String::as_str),
+        Some("pol+eng")
+    );
 
     activity.complete();
     assert_eq!(activity.status, ActivityStatus::Completed);

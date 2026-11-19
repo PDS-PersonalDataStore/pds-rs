@@ -22,9 +22,9 @@ pub mod value;
 
 pub use archive::{PdsArchive, PdsArchiveMetadata};
 pub use auth::{
-    create_client_auth_signature, AuthChallenge, AuthError, AuthSuccess, ClientAuth,
-    ClientAuthenticator, ClientHello, ClientId, ClientRecord, ClientStatus, API_VERSION,
-    AUTH_CONTEXT_TAG, DEFAULT_SUPPORTED_API_VERSIONS,
+    API_VERSION, AUTH_CONTEXT_TAG, AuthChallenge, AuthError, AuthSuccess, ClientAuth,
+    ClientAuthenticator, ClientHello, ClientId, ClientRecord, ClientStatus,
+    DEFAULT_SUPPORTED_API_VERSIONS, create_client_auth_signature,
 };
 pub use blob::{BlobDescriptor, BlobError, BlobStore};
 pub use change::{Change, ChangeMetadata, EncryptionMode};
@@ -35,13 +35,13 @@ pub use dag::{DagError, HistoryDag};
 pub use entity::Entity;
 pub use id::{BlobId, ChangeId, EntityId, KeyId, RelationId};
 pub use ipc::{
-    IpcClientError, IpcRequest, IpcResponse, IpcServerHandler, IpcSessionManager, PdsIpcClient,
-    Session,
+    EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
+    IpcSessionManager, PdsIpcClient, Session,
 };
 pub use np::{
-    MessageId, MessageType, NodeIdentityId, NpClientAuth, NpClientHello, NpError, NpFrame,
-    NpFrameHeader, NpNode, NpServerFinished, NpServerHello, NP_DOMAIN_SEPARATOR, NP_MAGIC,
-    NP_VERSION,
+    MessageId, MessageType, NP_DOMAIN_SEPARATOR, NP_MAGIC, NP_VERSION, NodeIdentityId,
+    NpClientAuth, NpClientHello, NpError, NpFrame, NpFrameHeader, NpNode, NpServerFinished,
+    NpServerHello,
 };
 pub use operation::Operation;
 pub use provenance::{Activity, ActivityId, ActivityStatus, ProvenanceTarget};
@@ -49,8 +49,6 @@ pub use relation::Relation;
 pub use schema::{EntitySchema, PropertyDefinition, PropertyType, SchemaValidationError};
 pub use security::{AccessController, AppRegistration, Permission, SecurityError};
 pub use state::DatasetState;
-pub use storage::{DiskStorage, StorageError};
+pub use storage::{ClientCursor, DiskStorage, SqliteStorage, StorageError};
 pub use sync::{SyncEngine, SyncError, SyncMessage};
 pub use value::{PropertyName, PropertyValue};
-
-

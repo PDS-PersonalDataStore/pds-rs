@@ -1,6 +1,6 @@
 use pds::{
-    MessageType, NpClientAuth, NpClientHello, NpFrame, NpNode, NpServerFinished, NpServerHello,
-    NP_MAGIC, NP_VERSION,
+    MessageType, NP_MAGIC, NP_VERSION, NpClientAuth, NpClientHello, NpFrame, NpNode,
+    NpServerFinished, NpServerHello,
 };
 use sha2::{Digest, Sha256};
 

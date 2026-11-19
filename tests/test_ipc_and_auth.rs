@@ -1,8 +1,8 @@
 use ed25519_dalek::SigningKey;
 use pds::{
-    create_client_auth_signature, BlobId, ClientAuth, ClientAuthenticator, ClientHello,
-    DiskStorage, IpcRequest, IpcResponse, IpcServerHandler, IpcSessionManager, Permission,
-    PropertyValue, API_VERSION,
+    API_VERSION, BlobId, ClientAuth, ClientAuthenticator, ClientHello, DiskStorage, IpcRequest,
+    IpcResponse, IpcServerHandler, IpcSessionManager, Permission, PropertyValue,
+    create_client_auth_signature,
 };
 use std::collections::BTreeSet;
 use std::fs;
@@ -22,14 +22,11 @@ fn test_ipc_authentication_and_unauthorized_rejections() {
     permissions.insert(Permission::ReadEntities);
     permissions.insert(Permission::WriteEntities);
 
-    let client_id = authenticator.register_client(
-        "trusted_backup_client",
-        verifying_key.to_bytes(),
-    );
+    let client_id =
+        authenticator.register_client("trusted_backup_client", verifying_key.to_bytes());
     authenticator.approve_client(&client_id, permissions);
 
-    let mut handler =
-        IpcServerHandler::new(&mut storage, &mut session_manager, &mut authenticator);
+    let mut handler = IpcServerHandler::new(&mut storage, &mut session_manager, &mut authenticator);
 
     // Step 1: Valid handshake flow
     let hello = ClientHello::new(
@@ -58,18 +55,18 @@ fn test_ipc_authentication_and_unauthorized_rejections() {
         other => panic!("Expected Authenticated, got {:?}", other),
     };
     assert_eq!(
-        handler.sessions.get_session(&session_id).unwrap().api_version,
+        handler
+            .sessions
+            .get_session(&session_id)
+            .unwrap()
+            .api_version,
         API_VERSION
     );
 
     // Step 2: Test rejection with forged/wrong key on a fresh challenge
-    let hello_forged = ClientHello::new(
-        client_id,
-        API_VERSION,
-        [2u8; 32],
-        vec![],
-    );
-    let forged_challenge = match handler.handle_request(IpcRequest::Hello(hello_forged), Some(9999)) {
+    let hello_forged = ClientHello::new(client_id, API_VERSION, [2u8; 32], vec![]);
+    let forged_challenge = match handler.handle_request(IpcRequest::Hello(hello_forged), Some(9999))
+    {
         IpcResponse::Challenge(c) => c,
         other => panic!("Expected Challenge response, got {:?}", other),
     };

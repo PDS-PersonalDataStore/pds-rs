@@ -84,10 +84,7 @@ pub enum PropertyValue {
     DateTime(DateTime<Utc>),
     EntityRef(EntityId),
     BlobRef(BlobId),
-    Encrypted {
-        key_id: KeyId,
-        ciphertext: Vec<u8>,
-    },
+    Encrypted { key_id: KeyId, ciphertext: Vec<u8> },
     List(Vec<PropertyValue>),
     Map(BTreeMap<String, PropertyValue>),
 }
