@@ -167,6 +167,16 @@ impl ClientAuthenticator {
         public_key: [u8; 32],
     ) -> ClientId {
         let client_id = ClientId::new();
+        self.insert_client(client_id, name, public_key);
+        client_id
+    }
+
+    pub fn insert_client(
+        &mut self,
+        client_id: ClientId,
+        name: impl Into<String>,
+        public_key: [u8; 32],
+    ) {
         let record = ClientRecord {
             client_id,
             name: name.into(),
@@ -176,7 +186,6 @@ impl ClientAuthenticator {
             created_at: Utc::now(),
         };
         self.clients.insert(client_id, record);
-        client_id
     }
 
     pub fn approve_client(&mut self, client_id: &ClientId, permissions: BTreeSet<Permission>) {
