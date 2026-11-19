@@ -1,6 +1,6 @@
 use pds::{
-    Change, ChangeId, ChangeMetadata, DatasetState, EncryptionMode, EntityId, HistoryDag,
-    KeyStore, Operation, PropertyName, PropertyValue,
+    Change, ChangeId, ChangeMetadata, DatasetState, EncryptionMode, EntityId, HistoryDag, KeyStore,
+    Operation, PropertyName, PropertyValue,
 };
 
 #[test]
@@ -19,11 +19,12 @@ fn test_e2ee_encrypted_payload_property_lifecycle() {
     let change = Change::new(
         c1_id,
         vec![],
-        ChangeMetadata::new("medical_device_1")
-            .with_encryption_mode(EncryptionMode::EncryptedPayload {
+        ChangeMetadata::new("medical_device_1").with_encryption_mode(
+            EncryptionMode::EncryptedPayload {
                 key_id,
                 nonce: encrypted_data.nonce,
-            }),
+            },
+        ),
         vec![
             Operation::CreateEntity {
                 entity_id,
@@ -45,11 +46,15 @@ fn test_e2ee_encrypted_payload_property_lifecycle() {
         ],
     );
 
-    dag.insert(change).expect("Failed to insert encrypted change into DAG");
+    dag.insert(change)
+        .expect("Failed to insert encrypted change into DAG");
 
     // Project state
     let state = DatasetState::from_dag(&dag);
-    let entity = state.entities.get(&entity_id).expect("Entity not found in state");
+    let entity = state
+        .entities
+        .get(&entity_id)
+        .expect("Entity not found in state");
 
     // Plaintext property visible
     assert_eq!(
@@ -58,9 +63,14 @@ fn test_e2ee_encrypted_payload_property_lifecycle() {
     );
 
     // Encrypted property present but opaque
-    let enc_prop = entity.get_property(&PropertyName::from("medical.record")).unwrap();
+    let enc_prop = entity
+        .get_property(&PropertyName::from("medical.record"))
+        .unwrap();
     match enc_prop {
-        PropertyValue::Encrypted { key_id: prop_key_id, ciphertext } => {
+        PropertyValue::Encrypted {
+            key_id: prop_key_id,
+            ciphertext,
+        } => {
             assert_eq!(*prop_key_id, key_id);
             assert_eq!(ciphertext, &encrypted_data.ciphertext);
 
@@ -95,7 +105,8 @@ fn test_e2ee_blind_change_dag_replication() {
         vec![], // Untrusted nodes see empty operations vector in the graph
     );
 
-    dag.insert(blind_change).expect("Relay failed to insert blind change");
+    dag.insert(blind_change)
+        .expect("Relay failed to insert blind change");
     assert_eq!(dag.heads().iter().copied().collect::<Vec<_>>(), vec![c1_id]);
 
     // Untrusted node replicates DAG structure and child links without seeing payload
@@ -106,6 +117,7 @@ fn test_e2ee_blind_change_dag_replication() {
         ChangeMetadata::new("child_node"),
         vec![],
     );
-    dag.insert(child_change).expect("Relay failed to connect child change");
+    dag.insert(child_change)
+        .expect("Relay failed to connect child change");
     assert_eq!(dag.len(), 2);
 }

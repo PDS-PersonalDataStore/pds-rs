@@ -22,9 +22,9 @@ pub mod value;
 
 pub use archive::{PdsArchive, PdsArchiveMetadata};
 pub use auth::{
-    create_client_auth_signature, AuthChallenge, AuthError, AuthSuccess, ClientAuth,
-    ClientAuthenticator, ClientHello, ClientId, ClientRecord, ClientStatus, API_VERSION,
-    AUTH_CONTEXT_TAG, DEFAULT_SUPPORTED_API_VERSIONS,
+    API_VERSION, AUTH_CONTEXT_TAG, AuthChallenge, AuthError, AuthSuccess, ClientAuth,
+    ClientAuthenticator, ClientHello, ClientId, ClientRecord, ClientStatus,
+    DEFAULT_SUPPORTED_API_VERSIONS, create_client_auth_signature,
 };
 pub use blob::{BlobDescriptor, BlobError, BlobStore};
 pub use change::{Change, ChangeMetadata, EncryptionMode};
@@ -39,9 +39,9 @@ pub use ipc::{
     IpcSessionManager, PdsIpcClient, Session,
 };
 pub use np::{
-    MessageId, MessageType, NodeIdentityId, NpClientAuth, NpClientHello, NpError, NpFrame,
-    NpFrameHeader, NpNode, NpServerFinished, NpServerHello, NP_DOMAIN_SEPARATOR, NP_MAGIC,
-    NP_VERSION,
+    MessageId, MessageType, NP_DOMAIN_SEPARATOR, NP_MAGIC, NP_VERSION, NodeIdentityId,
+    NpClientAuth, NpClientHello, NpError, NpFrame, NpFrameHeader, NpNode, NpServerFinished,
+    NpServerHello,
 };
 pub use operation::Operation;
 pub use provenance::{Activity, ActivityId, ActivityStatus, ProvenanceTarget};
@@ -52,5 +52,3 @@ pub use state::DatasetState;
 pub use storage::{DiskStorage, StorageError};
 pub use sync::{SyncEngine, SyncError, SyncMessage};
 pub use value::{PropertyName, PropertyValue};
-
-

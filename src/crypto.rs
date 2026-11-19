@@ -53,7 +53,9 @@ impl KeyStore {
     }
 
     pub fn encrypt(&self, key_id: &KeyId, plaintext: &[u8]) -> Result<EncryptedData, CryptoError> {
-        let key_bytes = self.get_key(key_id).ok_or(CryptoError::KeyNotFound(*key_id))?;
+        let key_bytes = self
+            .get_key(key_id)
+            .ok_or(CryptoError::KeyNotFound(*key_id))?;
         let cipher = ChaCha20Poly1305::new(&Key::from(*key_bytes));
 
         let mut nonce_bytes = [0u8; 12];

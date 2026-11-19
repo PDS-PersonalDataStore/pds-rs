@@ -102,7 +102,6 @@ pub struct ClientAuth {
     pub signature: Vec<u8>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthSuccess {
     pub session_id: String,
@@ -161,11 +160,7 @@ impl ClientAuthenticator {
         &self.supported_versions
     }
 
-    pub fn register_client(
-        &mut self,
-        name: impl Into<String>,
-        public_key: [u8; 32],
-    ) -> ClientId {
+    pub fn register_client(&mut self, name: impl Into<String>, public_key: [u8; 32]) -> ClientId {
         let client_id = ClientId::new();
         self.insert_client(client_id, name, public_key);
         client_id
@@ -201,7 +196,11 @@ impl ClientAuthenticator {
 
     pub fn negotiate_version(&self, hello: &ClientHello) -> Result<String, AuthError> {
         let requested_versions: Vec<&str> = if !hello.supported_versions.is_empty() {
-            hello.supported_versions.iter().map(|s| s.as_str()).collect()
+            hello
+                .supported_versions
+                .iter()
+                .map(|s| s.as_str())
+                .collect()
         } else {
             vec![hello.api_version.as_str()]
         };
@@ -242,7 +241,8 @@ impl ClientAuthenticator {
             challenge_expires_at: Utc::now() + Duration::seconds(60),
         };
 
-        self.active_challenges.insert(hello.client_id, challenge.clone());
+        self.active_challenges
+            .insert(hello.client_id, challenge.clone());
         Ok(challenge)
     }
 
@@ -292,8 +292,8 @@ impl ClientAuthenticator {
 
         let verifying_key = VerifyingKey::from_bytes(&client.public_key)
             .map_err(|_| AuthError::InvalidSignature)?;
-        let signature = Signature::from_slice(&auth.signature)
-            .map_err(|_| AuthError::InvalidSignature)?;
+        let signature =
+            Signature::from_slice(&auth.signature).map_err(|_| AuthError::InvalidSignature)?;
 
         verifying_key
             .verify(&payload, &signature)
@@ -328,7 +328,6 @@ pub fn create_client_auth_signature(
     signature.to_bytes().to_vec()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,12 +351,7 @@ mod tests {
 
         let mut client_nonce = [0u8; 32];
         csprng.fill_bytes(&mut client_nonce);
-        let hello = ClientHello::new(
-            client_id,
-            API_VERSION,
-            client_nonce,
-            vec!["ipc".into()],
-        );
+        let hello = ClientHello::new(client_id, API_VERSION, client_nonce, vec!["ipc".into()]);
 
         let challenge = server.handle_client_hello(&hello).unwrap();
         assert_eq!(challenge.client_id, client_id);

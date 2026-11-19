@@ -86,13 +86,8 @@ pub enum EventTopic {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", content = "payload")]
 pub enum IpcNotification {
-    ChangeAppended {
-        change_id: ChangeId,
-        change: Change,
-    },
-    BlobAppended {
-        descriptor: BlobDescriptor,
-    },
+    ChangeAppended { change_id: ChangeId, change: Change },
+    BlobAppended { descriptor: BlobDescriptor },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -177,21 +172,35 @@ impl IpcSessionManager {
         session_id: &str,
         permission: &Permission,
     ) -> Result<(), &'static str> {
-        let session = self.get_session(session_id).ok_or("Invalid or expired session")?;
+        let session = self
+            .get_session(session_id)
+            .ok_or("Invalid or expired session")?;
         if !session.permissions.contains(permission) {
             return Err("Permission denied");
         }
         Ok(())
     }
 
-    pub fn subscribe(&mut self, session_id: &str, topics: BTreeSet<EventTopic>) -> Result<BTreeSet<EventTopic>, &'static str> {
-        let session = self.get_session_mut(session_id).ok_or("Invalid or expired session")?;
+    pub fn subscribe(
+        &mut self,
+        session_id: &str,
+        topics: BTreeSet<EventTopic>,
+    ) -> Result<BTreeSet<EventTopic>, &'static str> {
+        let session = self
+            .get_session_mut(session_id)
+            .ok_or("Invalid or expired session")?;
         session.subscriptions.extend(topics);
         Ok(session.subscriptions.clone())
     }
 
-    pub fn unsubscribe(&mut self, session_id: &str, topics: &BTreeSet<EventTopic>) -> Result<BTreeSet<EventTopic>, &'static str> {
-        let session = self.get_session_mut(session_id).ok_or("Invalid or expired session")?;
+    pub fn unsubscribe(
+        &mut self,
+        session_id: &str,
+        topics: &BTreeSet<EventTopic>,
+    ) -> Result<BTreeSet<EventTopic>, &'static str> {
+        let session = self
+            .get_session_mut(session_id)
+            .ok_or("Invalid or expired session")?;
         for topic in topics {
             session.subscriptions.remove(topic);
         }
@@ -265,8 +274,9 @@ impl<'a> IpcServerHandler<'a> {
                 session_id,
                 entity_id,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadEntities)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadEntities)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -278,8 +288,9 @@ impl<'a> IpcServerHandler<'a> {
                 entity_type,
                 properties,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::WriteEntities)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteEntities)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -298,8 +309,7 @@ impl<'a> IpcServerHandler<'a> {
                     });
                 }
 
-                let parents: Vec<ChangeId> =
-                    self.storage.dag().heads().iter().copied().collect();
+                let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
                 let meta = crate::change::ChangeMetadata::new("ipc-client");
                 let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
 
@@ -308,12 +318,11 @@ impl<'a> IpcServerHandler<'a> {
                     return IpcResponse::Error(err.to_string());
                 }
 
-                let notif = IpcNotification::ChangeAppended {
-                    change_id,
-                    change,
-                };
-                self.sessions.publish_notification(EventTopic::AllChanges, notif.clone());
-                self.sessions.publish_notification(EventTopic::EntityChanges, notif);
+                let notif = IpcNotification::ChangeAppended { change_id, change };
+                self.sessions
+                    .publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::EntityChanges, notif);
 
                 IpcResponse::EntityCreated(entity_id)
             }
@@ -321,8 +330,9 @@ impl<'a> IpcServerHandler<'a> {
                 session_id,
                 relation_id,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadEntities)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadEntities)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -335,8 +345,9 @@ impl<'a> IpcServerHandler<'a> {
                 source,
                 target,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::WriteEntities)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteEntities)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -349,8 +360,7 @@ impl<'a> IpcServerHandler<'a> {
                     target,
                 }];
 
-                let parents: Vec<ChangeId> =
-                    self.storage.dag().heads().iter().copied().collect();
+                let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
                 let meta = crate::change::ChangeMetadata::new("ipc-client");
                 let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
 
@@ -359,12 +369,11 @@ impl<'a> IpcServerHandler<'a> {
                     return IpcResponse::Error(err.to_string());
                 }
 
-                let notif = IpcNotification::ChangeAppended {
-                    change_id,
-                    change,
-                };
-                self.sessions.publish_notification(EventTopic::AllChanges, notif.clone());
-                self.sessions.publish_notification(EventTopic::RelationChanges, notif);
+                let notif = IpcNotification::ChangeAppended { change_id, change };
+                self.sessions
+                    .publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::RelationChanges, notif);
 
                 IpcResponse::RelationCreated(relation_id)
             }
@@ -372,8 +381,9 @@ impl<'a> IpcServerHandler<'a> {
                 session_id,
                 blob_id,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadBlobs)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadBlobs)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -387,8 +397,9 @@ impl<'a> IpcServerHandler<'a> {
                 data,
                 media_type,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::WriteBlobs)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteBlobs)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -411,8 +422,9 @@ impl<'a> IpcServerHandler<'a> {
                 since_change_id,
                 limit,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadHistory)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -438,8 +450,9 @@ impl<'a> IpcServerHandler<'a> {
                 }
             }
             IpcRequest::GetPendingChanges { session_id, limit } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadHistory)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -473,8 +486,9 @@ impl<'a> IpcServerHandler<'a> {
                 session_id,
                 change_id,
             } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadHistory)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -490,8 +504,9 @@ impl<'a> IpcServerHandler<'a> {
                 }
             }
             IpcRequest::GetClientCursor { session_id } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadHistory)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -503,8 +518,9 @@ impl<'a> IpcServerHandler<'a> {
                 IpcResponse::Cursor(cursor)
             }
             IpcRequest::Subscribe { session_id, topics } => {
-                if let Err(err) =
-                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadHistory)
                 {
                     return IpcResponse::Error(err.to_string());
                 }
@@ -526,23 +542,39 @@ impl<'a> IpcServerHandler<'a> {
         }
     }
 
-    pub fn append_change_and_notify(&mut self, change: Change) -> Result<(), crate::storage::StorageError> {
+    pub fn append_change_and_notify(
+        &mut self,
+        change: Change,
+    ) -> Result<(), crate::storage::StorageError> {
         let change_id = change.id;
-        let is_relation = change.operations.iter().any(|op| matches!(op, Operation::CreateRelation { .. } | Operation::DeleteRelation { .. }));
-        let is_entity = change.operations.iter().any(|op| matches!(op, Operation::CreateEntity { .. } | Operation::SetEntityProperty { .. } | Operation::RemoveEntityProperty { .. } | Operation::DeleteEntity { .. }));
+        let is_relation = change.operations.iter().any(|op| {
+            matches!(
+                op,
+                Operation::CreateRelation { .. } | Operation::DeleteRelation { .. }
+            )
+        });
+        let is_entity = change.operations.iter().any(|op| {
+            matches!(
+                op,
+                Operation::CreateEntity { .. }
+                    | Operation::SetEntityProperty { .. }
+                    | Operation::RemoveEntityProperty { .. }
+                    | Operation::DeleteEntity { .. }
+            )
+        });
 
         self.storage.append_change(change.clone())?;
 
-        let notif = IpcNotification::ChangeAppended {
-            change_id,
-            change,
-        };
-        self.sessions.publish_notification(EventTopic::AllChanges, notif.clone());
+        let notif = IpcNotification::ChangeAppended { change_id, change };
+        self.sessions
+            .publish_notification(EventTopic::AllChanges, notif.clone());
         if is_entity {
-            self.sessions.publish_notification(EventTopic::EntityChanges, notif.clone());
+            self.sessions
+                .publish_notification(EventTopic::EntityChanges, notif.clone());
         }
         if is_relation {
-            self.sessions.publish_notification(EventTopic::RelationChanges, notif);
+            self.sessions
+                .publish_notification(EventTopic::RelationChanges, notif);
         }
         Ok(())
     }
@@ -617,12 +649,17 @@ impl PdsIpcClient {
     }
 
     pub fn require_session(&self) -> Result<&str, IpcClientError> {
-        self.session_id.as_deref().ok_or(IpcClientError::NoActiveSession)
+        self.session_id
+            .as_deref()
+            .ok_or(IpcClientError::NoActiveSession)
     }
 
     pub fn get_entity_request(&self, entity_id: EntityId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
-        Ok(IpcRequest::GetEntity { session_id, entity_id })
+        Ok(IpcRequest::GetEntity {
+            session_id,
+            entity_id,
+        })
     }
 
     pub fn create_entity_request(
@@ -638,9 +675,15 @@ impl PdsIpcClient {
         })
     }
 
-    pub fn get_relation_request(&self, relation_id: RelationId) -> Result<IpcRequest, IpcClientError> {
+    pub fn get_relation_request(
+        &self,
+        relation_id: RelationId,
+    ) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
-        Ok(IpcRequest::GetRelation { session_id, relation_id })
+        Ok(IpcRequest::GetRelation {
+            session_id,
+            relation_id,
+        })
     }
 
     pub fn create_relation_request(
@@ -660,7 +703,10 @@ impl PdsIpcClient {
 
     pub fn get_blob_request(&self, blob_id: BlobId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
-        Ok(IpcRequest::GetBlob { session_id, blob_id })
+        Ok(IpcRequest::GetBlob {
+            session_id,
+            blob_id,
+        })
     }
 
     pub fn put_blob_request(
@@ -697,10 +743,7 @@ impl PdsIpcClient {
         Ok(IpcRequest::GetPendingChanges { session_id, limit })
     }
 
-    pub fn ack_changes_request(
-        &self,
-        change_id: ChangeId,
-    ) -> Result<IpcRequest, IpcClientError> {
+    pub fn ack_changes_request(&self, change_id: ChangeId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::AcknowledgeChanges {
             session_id,
@@ -745,11 +788,10 @@ impl PdsIpcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{create_client_auth_signature, ClientAuthenticator, API_VERSION};
+    use crate::auth::{API_VERSION, ClientAuthenticator, create_client_auth_signature};
     use ed25519_dalek::SigningKey;
     use rand::Rng;
     use std::fs;
-
 
     #[test]
     fn test_ipc_handler_lifecycle() {
@@ -762,7 +804,8 @@ mod tests {
         let mut secret = [0u8; 32];
         csprng.fill_bytes(&mut secret);
         let signing_key = SigningKey::from_bytes(&secret);
-        let client_id = authenticator.register_client("ShopLedger", signing_key.verifying_key().to_bytes());
+        let client_id =
+            authenticator.register_client("ShopLedger", signing_key.verifying_key().to_bytes());
 
         let mut perms = BTreeSet::new();
         perms.insert(Permission::ReadEntities);
@@ -773,12 +816,7 @@ mod tests {
 
         let mut nonce = [0u8; 32];
         csprng.fill_bytes(&mut nonce);
-        let hello = ClientHello::new(
-            client_id,
-            API_VERSION,
-            nonce,
-            vec!["ipc".into()],
-        );
+        let hello = ClientHello::new(client_id, API_VERSION, nonce, vec!["ipc".into()]);
 
         let resp = handler.handle_request(IpcRequest::Hello(hello), Some(1234));
         let challenge = match resp {
@@ -828,7 +866,12 @@ mod tests {
         }
 
         // Close session
-        let close_resp = handler.handle_request(IpcRequest::CloseSession { session_id: session_id.clone() }, Some(1234));
+        let close_resp = handler.handle_request(
+            IpcRequest::CloseSession {
+                session_id: session_id.clone(),
+            },
+            Some(1234),
+        );
         assert_eq!(close_resp, IpcResponse::SessionClosed);
 
         // Next request fails
@@ -846,7 +889,8 @@ mod tests {
 
     #[test]
     fn test_pds_ipc_client_full_flow() {
-        let temp_dir = std::env::temp_dir().join(format!("pds_ipc_client_test_{}", EntityId::new()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pds_ipc_client_test_{}", EntityId::new()));
         let mut storage = DiskStorage::open(&temp_dir).unwrap();
         let mut sessions = IpcSessionManager::new();
         let mut authenticator = ClientAuthenticator::new("pds-local-node");
@@ -919,7 +963,10 @@ mod tests {
 
         let poll_req = client.poll_changes_request(None, Some(10)).unwrap();
         match handler.handle_request(poll_req, Some(5678)) {
-            IpcResponse::Changes { changes, latest_change_id } => {
+            IpcResponse::Changes {
+                changes,
+                latest_change_id,
+            } => {
                 assert!(!changes.is_empty());
                 assert!(latest_change_id.is_some());
             }
@@ -959,29 +1006,40 @@ mod tests {
             perms.insert(Permission::ReadHistory);
             authenticator.approve_client(&client_id, perms);
 
-            let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
+            let mut handler =
+                IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
             let mut client = PdsIpcClient::new(client_id, signing_key.clone());
 
-            let challenge = match handler.handle_request(client.start_handshake(vec!["history".into()]), Some(1)) {
+            let challenge = match handler
+                .handle_request(client.start_handshake(vec!["history".into()]), Some(1))
+            {
                 IpcResponse::Challenge(c) => c,
                 other => panic!("Expected challenge, got {:?}", other),
             };
-            let success = match handler.handle_request(client.handle_challenge(&challenge), Some(1)) {
+            let success = match handler.handle_request(client.handle_challenge(&challenge), Some(1))
+            {
                 IpcResponse::Authenticated(s) => s,
                 other => panic!("Expected Authenticated, got {:?}", other),
             };
             client.handle_auth_success(&success);
 
             // Create entity 1
-            let create_req = client.create_entity_request(
-                Some("task".into()),
-                vec![("name".into(), PropertyValue::Text("Zadanie 1".into()))],
-            ).unwrap();
+            let create_req = client
+                .create_entity_request(
+                    Some("task".into()),
+                    vec![("name".into(), PropertyValue::Text("Zadanie 1".into()))],
+                )
+                .unwrap();
             handler.handle_request(create_req, Some(1));
 
             // Initial poll: gets change 1
-            let poll = match handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(1)) {
-                IpcResponse::Changes { changes, latest_change_id } => {
+            let poll = match handler
+                .handle_request(client.get_pending_changes_request(None).unwrap(), Some(1))
+            {
+                IpcResponse::Changes {
+                    changes,
+                    latest_change_id,
+                } => {
                     assert_eq!(changes.len(), 1);
                     first_change_id = latest_change_id;
                     latest_change_id.unwrap()
@@ -991,7 +1049,10 @@ mod tests {
 
             // Client acknowledges change 1
             let ack_req = client.ack_changes_request(poll).unwrap();
-            assert!(matches!(handler.handle_request(ack_req, Some(1)), IpcResponse::ChangesAcknowledged { .. }));
+            assert!(matches!(
+                handler.handle_request(ack_req, Some(1)),
+                IpcResponse::ChangesAcknowledged { .. }
+            ));
 
             // Client disconnects and shuts down
             let close = client.close_session_request().unwrap();
@@ -1034,15 +1095,19 @@ mod tests {
             // Verify cursor was preserved across restarts
             assert_eq!(storage.get_client_cursor(&client_id), first_change_id);
 
-            let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
+            let mut handler =
+                IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
             let mut client = PdsIpcClient::new(client_id, signing_key);
 
             // Fresh handshake with new session
-            let challenge = match handler.handle_request(client.start_handshake(vec!["history".into()]), Some(2)) {
+            let challenge = match handler
+                .handle_request(client.start_handshake(vec!["history".into()]), Some(2))
+            {
                 IpcResponse::Challenge(c) => c,
                 other => panic!("Expected challenge, got {:?}", other),
             };
-            let success = match handler.handle_request(client.handle_challenge(&challenge), Some(2)) {
+            let success = match handler.handle_request(client.handle_challenge(&challenge), Some(2))
+            {
                 IpcResponse::Authenticated(s) => s,
                 other => panic!("Expected Authenticated, got {:?}", other),
             };
@@ -1053,10 +1118,18 @@ mod tests {
             assert_eq!(cursor_resp, IpcResponse::Cursor(first_change_id));
 
             // Client pulls pending queue: receives exactly the 2 changes that arrived while offline!
-            let pending_resp = handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(2));
+            let pending_resp =
+                handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(2));
             let new_last_id = match pending_resp {
-                IpcResponse::Changes { changes, latest_change_id } => {
-                    assert_eq!(changes.len(), 2, "Must receive exactly the 2 changes from peer while offline");
+                IpcResponse::Changes {
+                    changes,
+                    latest_change_id,
+                } => {
+                    assert_eq!(
+                        changes.len(),
+                        2,
+                        "Must receive exactly the 2 changes from peer while offline"
+                    );
                     assert_eq!(changes[0].metadata.device_id, "peer-node-b");
                     assert_eq!(changes[1].metadata.device_id, "peer-node-b");
                     latest_change_id.unwrap()
@@ -1065,13 +1138,22 @@ mod tests {
             };
 
             // Client acknowledges all newly caught up changes
-            let ack_resp = handler.handle_request(client.ack_changes_request(new_last_id).unwrap(), Some(2));
-            assert_eq!(ack_resp, IpcResponse::ChangesAcknowledged { last_ack_change_id: new_last_id });
+            let ack_resp =
+                handler.handle_request(client.ack_changes_request(new_last_id).unwrap(), Some(2));
+            assert_eq!(
+                ack_resp,
+                IpcResponse::ChangesAcknowledged {
+                    last_ack_change_id: new_last_id
+                }
+            );
 
             // Next pull: queue is empty (all caught up)
-            let empty_resp = handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(2));
+            let empty_resp =
+                handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(2));
             match empty_resp {
-                IpcResponse::Changes { changes, .. } => assert!(changes.is_empty(), "Queue must be empty after full catchup"),
+                IpcResponse::Changes { changes, .. } => {
+                    assert!(changes.is_empty(), "Queue must be empty after full catchup")
+                }
                 other => panic!("Expected Changes, got {:?}", other),
             }
         }
@@ -1087,7 +1169,8 @@ mod tests {
         let mut authenticator = ClientAuthenticator::new("pds-pubsub-node");
 
         let signing_key = SigningKey::from_bytes(&[77u8; 32]);
-        let client_id = authenticator.register_client("RealtimeApp", signing_key.verifying_key().to_bytes());
+        let client_id =
+            authenticator.register_client("RealtimeApp", signing_key.verifying_key().to_bytes());
         authenticator.approve_client(&client_id, {
             let mut perms = BTreeSet::new();
             perms.insert(Permission::ReadEntities);
@@ -1101,7 +1184,9 @@ mod tests {
         let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
 
         // 1. Authenticate
-        let challenge = match handler.handle_request(client.start_handshake(vec!["realtime".into()]), Some(100)) {
+        let challenge = match handler
+            .handle_request(client.start_handshake(vec!["realtime".into()]), Some(100))
+        {
             IpcResponse::Challenge(c) => c,
             other => panic!("Expected challenge, got {:?}", other),
         };
@@ -1113,7 +1198,9 @@ mod tests {
         let session_id = client.session_id().unwrap();
 
         // 2. Subscribe to EntityChanges and BlobCreated
-        let sub_req = client.subscribe_request(vec![EventTopic::EntityChanges, EventTopic::BlobCreated]).unwrap();
+        let sub_req = client
+            .subscribe_request(vec![EventTopic::EntityChanges, EventTopic::BlobCreated])
+            .unwrap();
         match handler.handle_request(sub_req, Some(100)) {
             IpcResponse::Subscribed { topics } => {
                 assert!(topics.contains(&EventTopic::EntityChanges));
@@ -1123,14 +1210,20 @@ mod tests {
         }
 
         // 3. Create Entity -> should produce real-time notification
-        let create_ent_req = client.create_entity_request(
-            Some("channel".into()),
-            vec![("title".into(), PropertyValue::Text("General".into()))],
-        ).unwrap();
+        let create_ent_req = client
+            .create_entity_request(
+                Some("channel".into()),
+                vec![("title".into(), PropertyValue::Text("General".into()))],
+            )
+            .unwrap();
         handler.handle_request(create_ent_req, Some(100));
 
         let notifications = handler.sessions.drain_notifications(session_id);
-        assert_eq!(notifications.len(), 1, "Must receive exactly 1 real-time notification for entity creation");
+        assert_eq!(
+            notifications.len(),
+            1,
+            "Must receive exactly 1 real-time notification for entity creation"
+        );
         let change_id = match &notifications[0] {
             IpcNotification::ChangeAppended { change_id, change } => {
                 assert_eq!(change.metadata.device_id, "ipc-client");
@@ -1143,9 +1236,14 @@ mod tests {
         let ack_req = client.ack_changes_request(change_id).unwrap();
         assert_eq!(
             handler.handle_request(ack_req, Some(100)),
-            IpcResponse::ChangesAcknowledged { last_ack_change_id: change_id }
+            IpcResponse::ChangesAcknowledged {
+                last_ack_change_id: change_id
+            }
         );
-        assert_eq!(handler.storage.get_client_cursor(&client_id), Some(change_id));
+        assert_eq!(
+            handler.storage.get_client_cursor(&client_id),
+            Some(change_id)
+        );
 
         // 5. Incoming peer change replicated via append_change_and_notify
         let peer_change = Change::new(
@@ -1162,7 +1260,11 @@ mod tests {
 
         // 6. Client receives peer change push notification in realtime
         let peer_notifs = handler.sessions.drain_notifications(session_id);
-        assert_eq!(peer_notifs.len(), 1, "Client must receive pushed peer change notification in real time");
+        assert_eq!(
+            peer_notifs.len(),
+            1,
+            "Client must receive pushed peer change notification in real time"
+        );
         match &peer_notifs[0] {
             IpcNotification::ChangeAppended { change_id, change } => {
                 assert_eq!(*change_id, peer_change_id);
@@ -1174,16 +1276,21 @@ mod tests {
         // 7. Client ACKs peer change -> cursor advanced again
         let ack_peer_req = client.ack_changes_request(peer_change_id).unwrap();
         handler.handle_request(ack_peer_req, Some(100));
-        assert_eq!(handler.storage.get_client_cursor(&client_id), Some(peer_change_id));
+        assert_eq!(
+            handler.storage.get_client_cursor(&client_id),
+            Some(peer_change_id)
+        );
 
         // 8. Pending queue is now empty because all real-time events were ACKed
-        let pending_resp = handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(100));
+        let pending_resp =
+            handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(100));
         match pending_resp {
-            IpcResponse::Changes { changes, .. } => assert!(changes.is_empty(), "All changes were ACKed in real time"),
+            IpcResponse::Changes { changes, .. } => {
+                assert!(changes.is_empty(), "All changes were ACKed in real time")
+            }
             other => panic!("Expected Changes, got {:?}", other),
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
-

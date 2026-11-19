@@ -1,7 +1,7 @@
 use crate::codec::BinaryCodec;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::RngExt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;

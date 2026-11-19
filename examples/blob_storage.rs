@@ -18,7 +18,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Zapisano zasób 1: {:?}", desc1);
     println!("Zapisano zasób 2: {:?}", desc2);
-    println!("Deduplikacja skrótu SHA-256: {}", desc1.sha256 == desc2.sha256);
+    println!(
+        "Deduplikacja skrótu SHA-256: {}",
+        desc1.sha256 == desc2.sha256
+    );
 
     let read_bytes = store.get_data(&blob_id_1)?;
     assert_eq!(&read_bytes[..], photo_bytes);
