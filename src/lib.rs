@@ -35,8 +35,8 @@ pub use dag::{DagError, HistoryDag};
 pub use entity::Entity;
 pub use id::{BlobId, ChangeId, EntityId, KeyId, RelationId};
 pub use ipc::{
-    IpcClientError, IpcRequest, IpcResponse, IpcServerHandler, IpcSessionManager, PdsIpcClient,
-    Session,
+    EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
+    IpcSessionManager, PdsIpcClient, Session,
 };
 pub use np::{
     MessageId, MessageType, NodeIdentityId, NpClientAuth, NpClientHello, NpError, NpFrame,

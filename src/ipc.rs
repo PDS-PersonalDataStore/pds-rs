@@ -62,8 +62,36 @@ pub enum IpcRequest {
     GetClientCursor {
         session_id: String,
     },
+    Subscribe {
+        session_id: String,
+        topics: BTreeSet<EventTopic>,
+    },
+    Unsubscribe {
+        session_id: String,
+        topics: BTreeSet<EventTopic>,
+    },
     CloseSession {
         session_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum EventTopic {
+    AllChanges,
+    EntityChanges,
+    RelationChanges,
+    BlobCreated,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", content = "payload")]
+pub enum IpcNotification {
+    ChangeAppended {
+        change_id: ChangeId,
+        change: Change,
+    },
+    BlobAppended {
+        descriptor: BlobDescriptor,
     },
 }
 
@@ -86,6 +114,12 @@ pub enum IpcResponse {
     ChangesAcknowledged {
         last_ack_change_id: ChangeId,
     },
+    Subscribed {
+        topics: BTreeSet<EventTopic>,
+    },
+    Unsubscribed {
+        topics: BTreeSet<EventTopic>,
+    },
     SessionClosed,
     Error(String),
 }
@@ -98,6 +132,8 @@ pub struct Session {
     pub expires_at: DateTime<Utc>,
     pub peer_pid: Option<u32>,
     pub api_version: String,
+    pub subscriptions: BTreeSet<EventTopic>,
+    pub pending_notifications: Vec<IpcNotification>,
 }
 
 #[derive(Default)]
@@ -124,6 +160,14 @@ impl IpcSessionManager {
         Some(session)
     }
 
+    pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
+        let session = self.sessions.get_mut(session_id)?;
+        if Utc::now() > session.expires_at {
+            return None;
+        }
+        Some(session)
+    }
+
     pub fn remove_session(&mut self, session_id: &str) -> Option<Session> {
         self.sessions.remove(session_id)
     }
@@ -138,6 +182,41 @@ impl IpcSessionManager {
             return Err("Permission denied");
         }
         Ok(())
+    }
+
+    pub fn subscribe(&mut self, session_id: &str, topics: BTreeSet<EventTopic>) -> Result<BTreeSet<EventTopic>, &'static str> {
+        let session = self.get_session_mut(session_id).ok_or("Invalid or expired session")?;
+        session.subscriptions.extend(topics);
+        Ok(session.subscriptions.clone())
+    }
+
+    pub fn unsubscribe(&mut self, session_id: &str, topics: &BTreeSet<EventTopic>) -> Result<BTreeSet<EventTopic>, &'static str> {
+        let session = self.get_session_mut(session_id).ok_or("Invalid or expired session")?;
+        for topic in topics {
+            session.subscriptions.remove(topic);
+        }
+        Ok(session.subscriptions.clone())
+    }
+
+    pub fn publish_notification(&mut self, topic: EventTopic, notification: IpcNotification) {
+        let now = Utc::now();
+        for session in self.sessions.values_mut() {
+            if session.expires_at > now {
+                let matches = session.subscriptions.contains(&EventTopic::AllChanges)
+                    || session.subscriptions.contains(&topic);
+                if matches {
+                    session.pending_notifications.push(notification.clone());
+                }
+            }
+        }
+    }
+
+    pub fn drain_notifications(&mut self, session_id: &str) -> Vec<IpcNotification> {
+        if let Some(session) = self.get_session_mut(session_id) {
+            std::mem::take(&mut session.pending_notifications)
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -175,6 +254,8 @@ impl<'a> IpcServerHandler<'a> {
                         expires_at: success.expires_at,
                         peer_pid,
                         api_version: success.api_version.clone(),
+                        subscriptions: BTreeSet::new(),
+                        pending_notifications: Vec::new(),
                     });
                     IpcResponse::Authenticated(success)
                 }
@@ -222,9 +303,17 @@ impl<'a> IpcServerHandler<'a> {
                 let meta = crate::change::ChangeMetadata::new("ipc-client");
                 let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
 
-                if let Err(err) = self.storage.append_change(change) {
+                let change_id = change.id;
+                if let Err(err) = self.storage.append_change(change.clone()) {
                     return IpcResponse::Error(err.to_string());
                 }
+
+                let notif = IpcNotification::ChangeAppended {
+                    change_id,
+                    change,
+                };
+                self.sessions.publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions.publish_notification(EventTopic::EntityChanges, notif);
 
                 IpcResponse::EntityCreated(entity_id)
             }
@@ -265,9 +354,17 @@ impl<'a> IpcServerHandler<'a> {
                 let meta = crate::change::ChangeMetadata::new("ipc-client");
                 let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
 
-                if let Err(err) = self.storage.append_change(change) {
+                let change_id = change.id;
+                if let Err(err) = self.storage.append_change(change.clone()) {
                     return IpcResponse::Error(err.to_string());
                 }
+
+                let notif = IpcNotification::ChangeAppended {
+                    change_id,
+                    change,
+                };
+                self.sessions.publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions.publish_notification(EventTopic::RelationChanges, notif);
 
                 IpcResponse::RelationCreated(relation_id)
             }
@@ -297,7 +394,15 @@ impl<'a> IpcServerHandler<'a> {
                 }
                 let blob_id = BlobId::new();
                 match self.storage.blobs_mut().put(blob_id, &data, media_type) {
-                    Ok(descriptor) => IpcResponse::BlobCreated(descriptor),
+                    Ok(descriptor) => {
+                        self.sessions.publish_notification(
+                            EventTopic::BlobCreated,
+                            IpcNotification::BlobAppended {
+                                descriptor: descriptor.clone(),
+                            },
+                        );
+                        IpcResponse::BlobCreated(descriptor)
+                    }
                     Err(err) => IpcResponse::Error(err.to_string()),
                 }
             }
@@ -397,11 +502,49 @@ impl<'a> IpcServerHandler<'a> {
                 let cursor = self.storage.get_client_cursor(&client_id);
                 IpcResponse::Cursor(cursor)
             }
+            IpcRequest::Subscribe { session_id, topics } => {
+                if let Err(err) =
+                    self.sessions.check_permission(&session_id, &Permission::ReadHistory)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                match self.sessions.subscribe(&session_id, topics) {
+                    Ok(current) => IpcResponse::Subscribed { topics: current },
+                    Err(err) => IpcResponse::Error(err.to_string()),
+                }
+            }
+            IpcRequest::Unsubscribe { session_id, topics } => {
+                match self.sessions.unsubscribe(&session_id, &topics) {
+                    Ok(current) => IpcResponse::Unsubscribed { topics: current },
+                    Err(err) => IpcResponse::Error(err.to_string()),
+                }
+            }
             IpcRequest::CloseSession { session_id } => {
                 self.sessions.remove_session(&session_id);
                 IpcResponse::SessionClosed
             }
         }
+    }
+
+    pub fn append_change_and_notify(&mut self, change: Change) -> Result<(), crate::storage::StorageError> {
+        let change_id = change.id;
+        let is_relation = change.operations.iter().any(|op| matches!(op, Operation::CreateRelation { .. } | Operation::DeleteRelation { .. }));
+        let is_entity = change.operations.iter().any(|op| matches!(op, Operation::CreateEntity { .. } | Operation::SetEntityProperty { .. } | Operation::RemoveEntityProperty { .. } | Operation::DeleteEntity { .. }));
+
+        self.storage.append_change(change.clone())?;
+
+        let notif = IpcNotification::ChangeAppended {
+            change_id,
+            change,
+        };
+        self.sessions.publish_notification(EventTopic::AllChanges, notif.clone());
+        if is_entity {
+            self.sessions.publish_notification(EventTopic::EntityChanges, notif.clone());
+        }
+        if is_relation {
+            self.sessions.publish_notification(EventTopic::RelationChanges, notif);
+        }
+        Ok(())
     }
 }
 
@@ -568,6 +711,28 @@ impl PdsIpcClient {
     pub fn get_cursor_request(&self) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::GetClientCursor { session_id })
+    }
+
+    pub fn subscribe_request<I>(&self, topics: I) -> Result<IpcRequest, IpcClientError>
+    where
+        I: IntoIterator<Item = EventTopic>,
+    {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::Subscribe {
+            session_id,
+            topics: topics.into_iter().collect(),
+        })
+    }
+
+    pub fn unsubscribe_request<I>(&self, topics: I) -> Result<IpcRequest, IpcClientError>
+    where
+        I: IntoIterator<Item = EventTopic>,
+    {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::Unsubscribe {
+            session_id,
+            topics: topics.into_iter().collect(),
+        })
     }
 
     pub fn close_session_request(&mut self) -> Result<IpcRequest, IpcClientError> {
@@ -913,4 +1078,112 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_pds_ipc_pubsub_realtime_and_ack() {
+        let temp_dir = std::env::temp_dir().join(format!("pds_pubsub_test_{}", EntityId::new()));
+        let mut storage = DiskStorage::open(&temp_dir).unwrap();
+        let mut sessions = IpcSessionManager::new();
+        let mut authenticator = ClientAuthenticator::new("pds-pubsub-node");
+
+        let signing_key = SigningKey::from_bytes(&[77u8; 32]);
+        let client_id = authenticator.register_client("RealtimeApp", signing_key.verifying_key().to_bytes());
+        authenticator.approve_client(&client_id, {
+            let mut perms = BTreeSet::new();
+            perms.insert(Permission::ReadEntities);
+            perms.insert(Permission::WriteEntities);
+            perms.insert(Permission::ReadHistory);
+            perms.insert(Permission::WriteBlobs);
+            perms
+        });
+
+        let mut client = PdsIpcClient::new(client_id, signing_key);
+        let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
+
+        // 1. Authenticate
+        let challenge = match handler.handle_request(client.start_handshake(vec!["realtime".into()]), Some(100)) {
+            IpcResponse::Challenge(c) => c,
+            other => panic!("Expected challenge, got {:?}", other),
+        };
+        let success = match handler.handle_request(client.handle_challenge(&challenge), Some(100)) {
+            IpcResponse::Authenticated(s) => s,
+            other => panic!("Expected Authenticated, got {:?}", other),
+        };
+        client.handle_auth_success(&success);
+        let session_id = client.session_id().unwrap();
+
+        // 2. Subscribe to EntityChanges and BlobCreated
+        let sub_req = client.subscribe_request(vec![EventTopic::EntityChanges, EventTopic::BlobCreated]).unwrap();
+        match handler.handle_request(sub_req, Some(100)) {
+            IpcResponse::Subscribed { topics } => {
+                assert!(topics.contains(&EventTopic::EntityChanges));
+                assert!(topics.contains(&EventTopic::BlobCreated));
+            }
+            other => panic!("Expected Subscribed, got {:?}", other),
+        }
+
+        // 3. Create Entity -> should produce real-time notification
+        let create_ent_req = client.create_entity_request(
+            Some("channel".into()),
+            vec![("title".into(), PropertyValue::Text("General".into()))],
+        ).unwrap();
+        handler.handle_request(create_ent_req, Some(100));
+
+        let notifications = handler.sessions.drain_notifications(session_id);
+        assert_eq!(notifications.len(), 1, "Must receive exactly 1 real-time notification for entity creation");
+        let change_id = match &notifications[0] {
+            IpcNotification::ChangeAppended { change_id, change } => {
+                assert_eq!(change.metadata.device_id, "ipc-client");
+                *change_id
+            }
+            other => panic!("Expected ChangeAppended, got {:?}", other),
+        };
+
+        // 4. Client ACKs the change received from realtime stream -> advances cursor!
+        let ack_req = client.ack_changes_request(change_id).unwrap();
+        assert_eq!(
+            handler.handle_request(ack_req, Some(100)),
+            IpcResponse::ChangesAcknowledged { last_ack_change_id: change_id }
+        );
+        assert_eq!(handler.storage.get_client_cursor(&client_id), Some(change_id));
+
+        // 5. Incoming peer change replicated via append_change_and_notify
+        let peer_change = Change::new(
+            ChangeId::new(),
+            vec![change_id],
+            crate::change::ChangeMetadata::new("peer-node-sync"),
+            vec![Operation::CreateEntity {
+                entity_id: EntityId::new(),
+                entity_type: Some("message".into()),
+            }],
+        );
+        let peer_change_id = peer_change.id;
+        handler.append_change_and_notify(peer_change).unwrap();
+
+        // 6. Client receives peer change push notification in realtime
+        let peer_notifs = handler.sessions.drain_notifications(session_id);
+        assert_eq!(peer_notifs.len(), 1, "Client must receive pushed peer change notification in real time");
+        match &peer_notifs[0] {
+            IpcNotification::ChangeAppended { change_id, change } => {
+                assert_eq!(*change_id, peer_change_id);
+                assert_eq!(change.metadata.device_id, "peer-node-sync");
+            }
+            other => panic!("Expected ChangeAppended, got {:?}", other),
+        }
+
+        // 7. Client ACKs peer change -> cursor advanced again
+        let ack_peer_req = client.ack_changes_request(peer_change_id).unwrap();
+        handler.handle_request(ack_peer_req, Some(100));
+        assert_eq!(handler.storage.get_client_cursor(&client_id), Some(peer_change_id));
+
+        // 8. Pending queue is now empty because all real-time events were ACKed
+        let pending_resp = handler.handle_request(client.get_pending_changes_request(None).unwrap(), Some(100));
+        match pending_resp {
+            IpcResponse::Changes { changes, .. } => assert!(changes.is_empty(), "All changes were ACKed in real time"),
+            other => panic!("Expected Changes, got {:?}", other),
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }
+
