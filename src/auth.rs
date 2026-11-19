@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use ulid::Ulid;
 
-pub const API_VERSION: &str = "1.2.0";
-pub const DEFAULT_SUPPORTED_API_VERSIONS: &[&str] = &["1.0.0", "1.0.1", "1.1.0", "1.2.0"];
+pub const API_VERSION: &str = "1.3.0";
+pub const DEFAULT_SUPPORTED_API_VERSIONS: &[&str] = &["1.0.0", "1.0.1", "1.1.0", "1.2.0", "1.3.0"];
 pub const AUTH_CONTEXT_TAG: &str = "PDS-CLIENT-AUTH-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -167,6 +167,16 @@ impl ClientAuthenticator {
         public_key: [u8; 32],
     ) -> ClientId {
         let client_id = ClientId::new();
+        self.insert_client(client_id, name, public_key);
+        client_id
+    }
+
+    pub fn insert_client(
+        &mut self,
+        client_id: ClientId,
+        name: impl Into<String>,
+        public_key: [u8; 32],
+    ) {
         let record = ClientRecord {
             client_id,
             name: name.into(),
@@ -176,7 +186,6 @@ impl ClientAuthenticator {
             created_at: Utc::now(),
         };
         self.clients.insert(client_id, record);
-        client_id
     }
 
     pub fn approve_client(&mut self, client_id: &ClientId, permissions: BTreeSet<Permission>) {
