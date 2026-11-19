@@ -185,6 +185,58 @@ Reaktywne odpytywanie o nowe zmiany w grafie DAG od zadanego identyfikatora:
 }
 ```
 
+### Trwała kolejka i kursor dla klientów (`GetPendingChanges` i `AcknowledgeChanges`)
+Gdy klient jest rozłączony lub nieaktywny, węzeł PDS może odbierać zmiany od innych węzłów (peerów). PDS przechowuje trwały kursor klienta na dysku (`client_cursors.json`), mapując `ClientId` na ostatnio potwierdzoną zmianę (`last_ack_change_id`).
+
+Po ponownym połączeniu klient pobiera zaległą kolejkę zmian i potwierdza ich przetworzenie (model at-least-once):
+
+1. **Pobranie zaległych zmian (`GetPendingChanges`):**
+```json
+{
+  "action": "GetPendingChanges",
+  "payload": {
+    "session_id": "a9f3b2c1...",
+    "limit": 100
+  }
+}
+```
+*Uwaga:* Jeśli `limit` nie jest podany, PDS domyślnie zwraca do 100 zmian od zapisanego kursora do aktualnych głów DAG.
+
+2. **Potwierdzenie przetworzenia zmian (`AcknowledgeChanges`):**
+```json
+{
+  "action": "AcknowledgeChanges",
+  "payload": {
+    "session_id": "a9f3b2c1...",
+    "last_ack_change_id": "01ARZ3NDEKTSV4RRFFQ69G5LATEST"
+  }
+}
+```
+**Odpowiedź:**
+```json
+{
+  "status": "ChangesAcknowledged",
+  "payload": {
+    "last_ack_change_id": "01ARZ3NDEKTSV4RRFFQ69G5LATEST"
+  }
+}
+```
+
+3. **Odczyt aktualnego kursora (`GetClientCursor`):**
+```json
+{
+  "action": "GetClientCursor",
+  "payload": "a9f3b2c1..."
+}
+```
+**Odpowiedź:**
+```json
+{
+  "status": "Cursor",
+  "payload": "01ARZ3NDEKTSV4RRFFQ69G5LATEST"
+}
+```
+
 ---
 
 ## 5. Implementacja w Rust (`PdsIpcClient`)
