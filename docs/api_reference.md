@@ -238,3 +238,21 @@ impl PdsNodeDaemon {
     }
 }
 ```
+
+---
+
+## 7. P2P Network Synchronization (`net` module)
+
+Moduł `net` udostępnia transport sieciowy oparty na bibliotece **Iroh (QUIC)** (`PdsNetworkNode`), służący do bezpośredniej synchronizacji historii DAG pomiędzy węzłami PDS w architekturze peer-to-peer.
+
+### Protokół ALPN
+- Identyfikator protokołu: `b"/pds/sync/1.0"` (`PDS_ALPN`)
+
+### Typy i interfejsy
+
+- `PdsNetworkNode::new(dag: Arc<RwLock<HistoryDag>>) -> Result<Self, NetSyncError>`: tworzy nowy punkt końcowy Iroh z domyślnym presetem n0 (`presets::N0`) i rejestruje ALPN.
+- `PdsNetworkNode::endpoint_id(&self) -> EndpointId`: zwraca unikalny identyfikator klucza publicznego węzła.
+- `PdsNetworkNode::addr(&self) -> EndpointAddr`: pobiera adres punktu końcowego (zawierający relay oraz bezpośrednie IP).
+- `PdsNetworkNode::handle_connection(conn: Connection, dag: Arc<RwLock<HistoryDag>>) -> Result<usize, NetSyncError>`: obsługuje przychodzące połączenie PDS, odpowiada zmianami oraz odbiera zmiany zdalne.
+- `PdsNetworkNode::sync_with_peer(&self, peer_addr: EndpointAddr) -> Result<usize, NetSyncError>`: łączy się ze wskazanym węzłem i przeprowadza dwukierunkową synchronizację brakujących zmian historii DAG.
+

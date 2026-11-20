@@ -9,6 +9,7 @@ pub mod dag;
 pub mod entity;
 pub mod id;
 pub mod ipc;
+pub mod net;
 pub mod np;
 pub mod operation;
 pub mod provenance;
@@ -38,6 +39,7 @@ pub use ipc::{
     EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
     IpcSessionManager, PdsIpcClient, Session,
 };
+pub use net::{NetSyncError, PDS_ALPN, PdsNetworkNode};
 pub use np::{
     MessageId, MessageType, NP_DOMAIN_SEPARATOR, NP_MAGIC, NP_VERSION, NodeIdentityId,
     NpClientAuth, NpClientHello, NpError, NpFrame, NpFrameHeader, NpNode, NpServerFinished,
