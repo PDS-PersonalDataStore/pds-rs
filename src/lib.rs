@@ -20,6 +20,7 @@ pub mod security;
 pub mod state;
 pub mod storage;
 pub mod sync;
+pub mod trust;
 pub mod value;
 
 pub use archive::{PdsArchive, PdsArchiveMetadata};
@@ -41,7 +42,10 @@ pub use ipc::{
     EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
     IpcSessionManager, PdsIpcClient, Session,
 };
-pub use net::{NetSyncError, PDS_ALPN, PdsNetworkNode};
+pub use net::{
+    BlobNetRequest, BlobNetResponse, NetAuthMessage, NetSyncError, PDS_ALPN, PDS_BLOB_ALPN,
+    PDS_SYNC_ALPN, PdsNetworkNode,
+};
 pub use np::{
     MessageId, MessageType, NP_DOMAIN_SEPARATOR, NP_MAGIC, NP_VERSION, NodeIdentityId,
     NpClientAuth, NpClientHello, NpError, NpFrame, NpFrameHeader, NpNode, NpServerFinished,
@@ -55,4 +59,5 @@ pub use security::{AccessController, AppRegistration, Permission, SecurityError}
 pub use state::DatasetState;
 pub use storage::{ClientCursor, DiskStorage, SqliteStorage, StorageError};
 pub use sync::{SyncEngine, SyncError, SyncMessage};
+pub use trust::{PairingSession, TrustError, TrustEvent, TrustManager, TrustedNode};
 pub use value::{PropertyName, PropertyValue};
