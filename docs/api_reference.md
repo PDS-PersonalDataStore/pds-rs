@@ -146,10 +146,14 @@ for notif in pending_notifs {
 - `Authenticate(ClientAuth)`: Przesłanie podpisu kryptograficznego i otwarcie sesji.
 - `GetEntity { session_id, entity_id }`: Pobranie encji ze stanu.
 - `CreateEntity { session_id, entity_type, properties }`: Utworzenie encji w nowym `Change`.
+- `UpdateEntity { session_id, entity_id, set_properties, remove_properties }`: Modyfikacja atrybutów encji.
+- `DeleteEntity { session_id, entity_id }`: Usunięcie encji (z kaskadowym usunięciem jej relacji).
 - `GetRelation { session_id, relation_id }`: Pobranie relacji.
 - `CreateRelation { session_id, relation_type, source, target }`: Połączenie encji relacją.
+- `UpdateRelation { session_id, relation_id, set_properties, remove_properties }`: Modyfikacja atrybutów relacji.
+- `DeleteRelation { session_id, relation_id }`: Usunięcie relacji.
 - `GetBlob { session_id, blob_id }`: Pobranie zawartości binarnej z CAS.
-- `PutBlob { session_id, data, media_type }`: Zapis pliku binarnego z deduplikacją SHA-256.
+- `PutBlob { session_id, data, media_type }`: Zapis pliku binarnego z deduplikacją SHA-256 (bloby są niemutowalne).
 - `PollChanges { session_id, since_change_id, limit }`: Odpytanie o historię zmian.
 - `GetPendingChanges { session_id, limit }`: Pobranie zaległych zmian od ostatniego kursora.
 - `AcknowledgeChanges { session_id, change_id }`: Potwierdzenie i przesunięcie trwałego kursora.
