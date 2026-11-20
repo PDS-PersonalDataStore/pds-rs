@@ -32,6 +32,11 @@ pub struct ClientCursor {
     pub updated_at: DateTime<Utc>,
 }
 
+pub type LoadedTrustedNodes = (
+    Vec<crate::trust::TrustedNode>,
+    std::collections::BTreeMap<String, [u8; 32]>,
+);
+
 pub struct DiskStorage {
     root_dir: PathBuf,
     dag: HistoryDag,
@@ -206,6 +211,16 @@ impl SqliteStorage {
                 last_ack_change_id TEXT,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS trusted_nodes (
+                node_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                public_key BLOB NOT NULL,
+                revocation_hash BLOB NOT NULL,
+                revocation_secret BLOB,
+                is_revoked INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            );
             CREATE INDEX IF NOT EXISTS idx_changes_created_at ON changes(created_at);
             ",
         )?;
@@ -318,6 +333,121 @@ impl SqliteStorage {
         )?;
 
         Ok(())
+    }
+
+    pub fn save_trusted_node(
+        &mut self,
+        node: &crate::trust::TrustedNode,
+        revocation_secret: Option<[u8; 32]>,
+    ) -> Result<(), StorageError> {
+        let is_revoked_int = if node.is_revoked { 1 } else { 0 };
+        let created_at_str = node.created_at.to_rfc3339();
+        let revoked_at_str = node.revoked_at.map(|t| t.to_rfc3339());
+        let sec_blob = revocation_secret.map(|s| s.to_vec());
+
+        self.conn.execute(
+            "INSERT INTO trusted_nodes (node_id, name, public_key, revocation_hash, revocation_secret, is_revoked, created_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(node_id) DO UPDATE SET
+                name = excluded.name,
+                public_key = excluded.public_key,
+                revocation_hash = excluded.revocation_hash,
+                revocation_secret = coalesce(excluded.revocation_secret, trusted_nodes.revocation_secret),
+                is_revoked = excluded.is_revoked,
+                revoked_at = excluded.revoked_at",
+            rusqlite::params![
+                node.node_id,
+                node.name,
+                node.public_key.to_vec(),
+                node.revocation_hash.to_vec(),
+                sec_blob,
+                is_revoked_int,
+                created_at_str,
+                revoked_at_str,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn load_trusted_nodes(&self) -> Result<LoadedTrustedNodes, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT node_id, name, public_key, revocation_hash, revocation_secret, is_revoked, created_at, revoked_at FROM trusted_nodes"
+        )?;
+
+        let mut nodes = Vec::new();
+        let mut secrets = std::collections::BTreeMap::new();
+
+        let rows = stmt.query_map([], |row| {
+            let node_id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let pub_blob: Vec<u8> = row.get(2)?;
+            let rev_hash_blob: Vec<u8> = row.get(3)?;
+            let sec_blob: Option<Vec<u8>> = row.get(4)?;
+            let is_revoked: i64 = row.get(5)?;
+            let created_at_str: String = row.get(6)?;
+            let revoked_at_str: Option<String> = row.get(7)?;
+
+            Ok((
+                node_id,
+                name,
+                pub_blob,
+                rev_hash_blob,
+                sec_blob,
+                is_revoked != 0,
+                created_at_str,
+                revoked_at_str,
+            ))
+        })?;
+
+        for r in rows {
+            let (
+                node_id,
+                name,
+                pub_blob,
+                rev_hash_blob,
+                sec_blob,
+                is_revoked,
+                created_str,
+                revoked_str,
+            ) = r?;
+            let mut public_key = [0u8; 32];
+            if pub_blob.len() == 32 {
+                public_key.copy_from_slice(&pub_blob);
+            }
+            let mut revocation_hash = [0u8; 32];
+            if rev_hash_blob.len() == 32 {
+                revocation_hash.copy_from_slice(&rev_hash_blob);
+            }
+            if let Some(sec) = sec_blob
+                && sec.len() == 32
+            {
+                let mut s = [0u8; 32];
+                s.copy_from_slice(&sec);
+                secrets.insert(node_id.clone(), s);
+            }
+
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let revoked_at = revoked_str.and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .ok()
+            });
+
+            nodes.push(crate::trust::TrustedNode {
+                node_id,
+                name,
+                public_key,
+                revocation_hash,
+                is_revoked,
+                created_at,
+                revoked_at,
+            });
+        }
+
+        Ok((nodes, secrets))
     }
 
     /// Migrates existing DiskStorage (history.jsonl & client_cursors.json) into this SqliteStorage instance

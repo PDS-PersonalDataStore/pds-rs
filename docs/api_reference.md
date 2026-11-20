@@ -209,18 +209,21 @@ println!("Zastosowano {} nowych zmian od peera.", applied_changes.len());
 
 ## 7. P2P Network Synchronization (`net` module)
 
-Moduł `net` udostępnia transport sieciowy oparty na bibliotece **Iroh (QUIC)** (`PdsNetworkNode`), służący do bezpośredniej synchronizacji historii DAG pomiędzy węzłami PDS w architekturze peer-to-peer.
+Moduł `net` udostępnia transport sieciowy oparty na bibliotece **Iroh (QUIC)** ([`PdsNetworkNode`](file:///home/tau2c/Projects/PDS/src/net.rs)), służący do wzajemnie uwierzytelnionej synchronizacji historii DAG oraz transferu szyfrowanych obiektów CAS ([`BlobStore`](file:///home/tau2c/Projects/PDS/src/blob.rs)) pomiędzy zaufanymi węzłami PDS w architekturze peer-to-peer.
 
-### Protokół ALPN
-- Identyfikator protokołu: `b"/pds/sync/1.0"` (`PDS_ALPN`)
+### Protokoły ALPN
+- **Synchronizacja historii DAG**: `b"/pds/sync/1.0"` (`PDS_SYNC_ALPN`) – challenge-response Ed25519, weryfikacja zaufania węzła oraz wydanie 24-godzinnego tokenu sesyjnego (`session_token`).
+- **Pobieranie blobów CAS**: `b"/pds/blob/1.0"` (`PDS_BLOB_ALPN`) – autoryzowane pobieranie zaszyfrowanych danych obiektów CAS na podstawie uzgodnionego tokenu sesyjnego.
 
 ### Typy i interfejsy
 
-- `PdsNetworkNode::new(dag: Arc<RwLock<HistoryDag>>) -> Result<Self, NetSyncError>`: tworzy nowy punkt końcowy Iroh z domyślnym presetem n0 (`presets::N0`) i rejestruje ALPN.
-- `PdsNetworkNode::endpoint_id(&self) -> EndpointId`: zwraca unikalny identyfikator klucza publicznego węzła.
+- `PdsNetworkNode::new(dag: Arc<RwLock<HistoryDag>>, trust: Arc<RwLock<TrustManager>>, blobs: Arc<RwLock<BlobStore>>) -> Result<Self, NetSyncError>`: tworzy nowy punkt końcowy Iroh z rejestracją obu ALPN.
+- `PdsNetworkNode::endpoint_id(&self) -> EndpointId`: zwraca identyfikator klucza punktu końcowego.
 - `PdsNetworkNode::addr(&self) -> EndpointAddr`: pobiera adres punktu końcowego (zawierający relay oraz bezpośrednie IP).
-- `PdsNetworkNode::handle_connection(conn: Connection, dag: Arc<RwLock<HistoryDag>>) -> Result<Vec<Change>, NetSyncError>`: obsługuje przychodzące połączenie PDS, odpowiada zmianami oraz odbiera i aplikuje zmiany zdalne.
-- `PdsNetworkNode::sync_with_peer(&self, peer_addr: EndpointAddr) -> Result<Vec<Change>, NetSyncError>`: łączy się ze wskazanym węzłem i przeprowadza dwukierunkową synchronizację brakujących zmian historii DAG.
+- `PdsNetworkNode::active_tokens(&self) -> Arc<RwLock<BTreeMap<[u8; 32], DateTime<Utc>>>>`: zwraca mapę aktywnych tokenów sesyjnych.
+- `PdsNetworkNode::handle_connection(conn: Connection, dag: Arc<RwLock<HistoryDag>>, trust: Arc<RwLock<TrustManager>>, blobs: Arc<RwLock<BlobStore>>, active_tokens: Arc<RwLock<BTreeMap<[u8; 32], DateTime<Utc>>>>) -> Result<Vec<Change>, NetSyncError>`: obsługuje przychodzące połączenia na `/pds/sync/1.0` lub `/pds/blob/1.0`.
+- `PdsNetworkNode::sync_with_peer(&self, peer_addr: EndpointAddr, signing_key: &SigningKey) -> Result<([u8; 32], Vec<Change>), NetSyncError>`: realizuje handshake uwierzytelniający, pobiera token sesyjny i przeprowadza dwukierunkową synchronizację DAG.
+- `PdsNetworkNode::fetch_blob(&self, peer_addr: EndpointAddr, session_token: [u8; 32], blob_id: BlobId) -> Result<Vec<u8>, NetSyncError>`: pobiera zawartość bloba CAS po ALPN `/pds/blob/1.0`.
 
 ---
 
@@ -230,6 +233,17 @@ Moduł `daemon` udostępnia strukturę [`PdsNodeDaemon`](file:///home/tau2c/Proj
 - Trwałą bazę danych [`SqliteStorage`](file:///home/tau2c/Projects/PDS/src/storage.rs),
 - Uwierzytelnianie i autoryzację klientów [`ClientAuthenticator`](file:///home/tau2c/Projects/PDS/src/auth.rs),
 - Zarządzanie sesjami i powiadomieniami Pub/Sub [`IpcSessionManager`](file:///home/tau2c/Projects/PDS/src/ipc.rs),
+- Magazyn zaufania urządzeń [`TrustManager`](file:///home/tau2c/Projects/PDS/src/trust.rs),
+- Magazyn obiektów binarnych [`BlobStore`](file:///home/tau2c/Projects/PDS/src/blob.rs),
 - P2P transport Iroh [`PdsNetworkNode`](file:///home/tau2c/Projects/PDS/src/net.rs).
+
+---
+
+## 9. Device Trust & Revocation (`trust` module)
+
+Moduł `trust` odpowiada za zarządzanie tożsamościami i zaufaniem węzłów w sieci PDS:
+- **Parowanie urządzeń (QR + PIN)**: Generowanie 6-cyfrowego kodu PIN i weryfikacja SAS hash `SHA256(peer_public_key || PIN)` w celu zapobiegania atakom typu MITM.
+- **Pre-generowane jednorazowe sekrety odwołania (`revocation_secret`)**: Podczas parowania węzeł autoryzujący tworzy losowy 32-bajtowy sekret odwołania i publikuje skrót `revocation_hash = SHA256(revocation_secret)`. Sekret jest przechowywany lokalnie i nie jest przekazywany parowanemu urządzeniu.
+- **Odwołanie węzła (`revoke_node`)**: Ujawnienie sekretu trwale i nieodwracalnie unieważnia zaufanie do węzła w całej sieci.
 
 

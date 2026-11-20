@@ -27,6 +27,10 @@ pub enum DaemonError {
     Ipc(String),
 }
 
+use crate::blob::BlobStore;
+use crate::trust::TrustManager;
+use ed25519_dalek::SigningKey;
+
 /// The top-level PDS node daemon unifying persistent SQLite storage,
 /// IPC clients authentication, pub/sub notifications, and P2P Iroh synchronization.
 #[allow(clippy::arc_with_non_send_sync)]
@@ -34,23 +38,44 @@ pub struct PdsNodeDaemon {
     storage: Arc<RwLock<SqliteStorage>>,
     sessions: Arc<RwLock<IpcSessionManager>>,
     authenticator: Arc<RwLock<ClientAuthenticator>>,
+    trust: Arc<RwLock<TrustManager>>,
+    blobs: Arc<RwLock<BlobStore>>,
+    signing_key: SigningKey,
     net_node: PdsNetworkNode,
     shared_dag: Arc<RwLock<HistoryDag>>,
 }
 
 impl PdsNodeDaemon {
     /// Initializes a new PdsNodeDaemon from a root storage directory and node name.
-    /// Loads history from SQLite and initializes the Iroh QUIC network endpoint.
+    /// Loads history and trusted nodes from SQLite and initializes the Iroh QUIC network endpoint.
     #[allow(clippy::arc_with_non_send_sync)]
     pub async fn init(root_dir: impl AsRef<Path>, node_name: &str) -> Result<Self, DaemonError> {
         let storage = SqliteStorage::open(root_dir)?;
         let shared_dag = Arc::new(RwLock::new(storage.dag().clone()));
-        let net_node = PdsNetworkNode::new(shared_dag.clone()).await?;
+        let blobs = Arc::new(RwLock::new(storage.blobs().clone()));
+
+        // Generate or load node signing key
+        let mut key_bytes = [0u8; 32];
+        rand::fill(&mut key_bytes);
+        let signing_key = SigningKey::from_bytes(&key_bytes);
+
+        let mut trust_mgr = TrustManager::new(node_name, signing_key.clone());
+        let (saved_nodes, _) = storage.load_trusted_nodes()?;
+        for n in saved_nodes {
+            trust_mgr.register_trusted_node(n);
+        }
+        let trust = Arc::new(RwLock::new(trust_mgr));
+
+        let net_node =
+            PdsNetworkNode::new(shared_dag.clone(), trust.clone(), blobs.clone()).await?;
 
         Ok(Self {
             storage: Arc::new(RwLock::new(storage)),
             sessions: Arc::new(RwLock::new(IpcSessionManager::new())),
             authenticator: Arc::new(RwLock::new(ClientAuthenticator::new(node_name))),
+            trust,
+            blobs,
+            signing_key,
             net_node,
             shared_dag,
         })
@@ -595,13 +620,24 @@ impl PdsNodeDaemon {
         }
     }
 
+    pub fn trust(&self) -> Arc<RwLock<TrustManager>> {
+        self.trust.clone()
+    }
+
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.signing_key
+    }
+
     /// Synchronizes history with a remote Iroh peer, persisting newly applied changes
     /// to SQLite storage and broadcasting them to subscribed IPC sessions.
     pub async fn sync_with_peer(
         &self,
         peer_addr: EndpointAddr,
-    ) -> Result<Vec<Change>, DaemonError> {
-        let applied_changes = self.net_node.sync_with_peer(peer_addr).await?;
+    ) -> Result<([u8; 32], Vec<Change>), DaemonError> {
+        let (session_token, applied_changes) = self
+            .net_node
+            .sync_with_peer(peer_addr, &self.signing_key)
+            .await?;
 
         if !applied_changes.is_empty() {
             let mut storage = self.storage.write().await;
@@ -646,7 +682,7 @@ impl PdsNodeDaemon {
             }
         }
 
-        Ok(applied_changes)
+        Ok((session_token, applied_changes))
     }
 
     /// Handles a single incoming Iroh QUIC peer connection, persisting newly applied changes
@@ -655,8 +691,14 @@ impl PdsNodeDaemon {
         &self,
         conn: iroh::endpoint::Connection,
     ) -> Result<Vec<Change>, DaemonError> {
-        let applied_changes =
-            PdsNetworkNode::handle_connection(conn, self.shared_dag.clone()).await?;
+        let applied_changes = PdsNetworkNode::handle_connection(
+            conn,
+            self.shared_dag.clone(),
+            self.trust.clone(),
+            self.blobs.clone(),
+            self.net_node.active_tokens(),
+        )
+        .await?;
 
         if !applied_changes.is_empty() {
             let mut storage = self.storage.write().await;
@@ -753,6 +795,31 @@ mod tests {
             other => panic!("Expected EntityCreated, got {:?}", other),
         };
 
+        // Register mutual trust between Daemon 1 and Daemon 2
+        {
+            let pin = "654321";
+            let pin_hash = TrustManager::compute_pin_hash(
+                &daemon2.signing_key().verifying_key().to_bytes(),
+                pin,
+            );
+            let t1_arc = daemon1.trust();
+            let mut t1 = t1_arc.write().await;
+            let (_trusted_n2, auth_event) = t1
+                .complete_pairing(
+                    "daemon-2".into(),
+                    "Daemon 2".into(),
+                    daemon2.signing_key().verifying_key().to_bytes(),
+                    pin,
+                    pin_hash,
+                )
+                .unwrap();
+
+            let t2_arc = daemon2.trust();
+            let mut t2 = t2_arc.write().await;
+            t2.register_trusted_node(t1.get_node("daemon-1").unwrap().clone());
+            t2.apply_authorization(auth_event).unwrap();
+        }
+
         // Verify entity persisted in SQLite on Daemon 1
         {
             let st_arc = daemon1.storage();
@@ -765,6 +832,9 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         let srv_endpoint = daemon1.net_node().endpoint().clone();
         let daemon1_shared_dag = daemon1.dag();
+        let daemon1_trust = daemon1.trust();
+        let daemon1_blobs = daemon1.blobs.clone();
+        let daemon1_tokens = daemon1.net_node().active_tokens();
         let daemon1_storage = daemon1.storage();
         let daemon1_addr = daemon1.addr();
         let storage2_arc = daemon2.storage();
@@ -774,9 +844,15 @@ mod tests {
                 let server_handle = tokio::task::spawn_local(async move {
                     let incoming = srv_endpoint.accept().await.unwrap();
                     let conn = incoming.await.unwrap();
-                    let changes = PdsNetworkNode::handle_connection(conn, daemon1_shared_dag)
-                        .await
-                        .unwrap();
+                    let changes = PdsNetworkNode::handle_connection(
+                        conn,
+                        daemon1_shared_dag,
+                        daemon1_trust,
+                        daemon1_blobs,
+                        daemon1_tokens,
+                    )
+                    .await
+                    .unwrap();
                     let mut st = daemon1_storage.write().await;
                     for c in changes {
                         st.append_change(c).unwrap();
@@ -784,7 +860,7 @@ mod tests {
                 });
 
                 // 3. Daemon 2 syncs with Daemon 1
-                let applied = daemon2.sync_with_peer(daemon1_addr).await.unwrap();
+                let (_token, applied) = daemon2.sync_with_peer(daemon1_addr).await.unwrap();
                 assert_eq!(
                     applied.len(),
                     1,
