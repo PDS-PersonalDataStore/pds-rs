@@ -63,7 +63,7 @@ impl PdsNetworkNode {
     pub async fn handle_connection(
         conn: Connection,
         dag: Arc<RwLock<HistoryDag>>,
-    ) -> Result<usize, NetSyncError> {
+    ) -> Result<Vec<Change>, NetSyncError> {
         let (mut send, mut recv) = conn.accept_bi().await?;
 
         // 1. Read SyncRequest
@@ -100,7 +100,7 @@ impl PdsNetworkNode {
             .map_err(|e| NetSyncError::Write(e.to_string()))?;
 
         // 3. Client might also send its changes (bidirectional exchange)
-        let mut applied = 0;
+        let mut applied_changes = Vec::new();
         if let Ok((mut client_send, mut client_recv)) = conn.accept_bi().await {
             let client_bytes = client_recv
                 .read_to_end(10 * 1024 * 1024)
@@ -112,18 +112,23 @@ impl PdsNetworkNode {
                     missing_changes, ..
                 } = incoming
                 {
+                    let to_apply = missing_changes.clone();
                     let mut dag_guard = dag.write().await;
-                    applied = SyncEngine::apply_response(&mut dag_guard, missing_changes)?;
+                    SyncEngine::apply_response(&mut dag_guard, to_apply)?;
+                    applied_changes = missing_changes;
                 }
             }
             let _ = client_send.finish();
         }
 
-        Ok(applied)
+        Ok(applied_changes)
     }
 
     /// Connects to a remote peer via Iroh and synchronizes history
-    pub async fn sync_with_peer(&self, peer_addr: EndpointAddr) -> Result<usize, NetSyncError> {
+    pub async fn sync_with_peer(
+        &self,
+        peer_addr: EndpointAddr,
+    ) -> Result<Vec<Change>, NetSyncError> {
         let conn = self
             .endpoint
             .connect(peer_addr, PDS_ALPN)
@@ -160,9 +165,11 @@ impl PdsNetworkNode {
         };
 
         // 3. Apply changes from peer to our DAG
-        let applied_from_peer = {
+        let applied_changes = {
+            let to_apply = peer_changes.clone();
             let mut dag_guard = self.dag.write().await;
-            SyncEngine::apply_response(&mut dag_guard, peer_changes)?
+            SyncEngine::apply_response(&mut dag_guard, to_apply)?;
+            peer_changes
         };
 
         // 4. Send changes that peer is missing in a reverse stream
@@ -189,7 +196,7 @@ impl PdsNetworkNode {
             .map_err(|e| NetSyncError::Write(e.to_string()))?;
         let _ = rev_send.finish();
 
-        Ok(applied_from_peer)
+        Ok(applied_changes)
     }
 }
 
@@ -257,7 +264,8 @@ mod tests {
         let applied = node2.sync_with_peer(node1_addr).await.unwrap();
 
         assert_eq!(
-            applied, 2,
+            applied.len(),
+            2,
             "Node 2 must receive and apply 2 changes from Node 1"
         );
         {

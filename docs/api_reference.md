@@ -189,54 +189,20 @@ let applied_count = engine.handle_sync_response(&sync_resp, storage.dag_mut())?;
 
 ```rust
 use pds::{
-    ClientAuthenticator, IpcRequest, IpcResponse, IpcServerHandler,
-    IpcSessionManager, Permission, SqliteStorage,
+    ClientAuthenticator, IpcRequest, IpcResponse, IpcSessionManager,
+    PdsNetworkNode, PdsNodeDaemon, SqliteStorage,
 };
-use std::collections::BTreeSet;
+use iroh::EndpointAddr;
 
-pub struct PdsNodeDaemon {
-    storage: SqliteStorage,
-    sessions: IpcSessionManager,
-    authenticator: ClientAuthenticator,
-}
+// Inicjalizacja pełnego demona węzła (SQLite + IPC + Iroh P2P)
+let daemon = PdsNodeDaemon::init("/var/lib/pds", "node-alpha").await?;
 
-impl PdsNodeDaemon {
-    pub fn init(storage_path: &str, node_name: &str) -> anyhow::Result<Self> {
-        let storage = SqliteStorage::open(storage_path)?;
-        let sessions = IpcSessionManager::new();
-        let authenticator = ClientAuthenticator::new(node_name);
+// Obsługa żądania IPC od lokalnej aplikacji klienckiej
+let response = daemon.handle_ipc_request(request, caller_pid).await?;
 
-        Ok(Self {
-            storage,
-            sessions,
-            authenticator,
-        })
-    }
-
-    pub fn process_ipc_message(
-        &mut self,
-        raw_json: &[u8],
-        caller_pid: Option<u32>,
-    ) -> (IpcResponse, Vec<(String, pds::IpcNotification)>) {
-        let req: IpcRequest = match serde_json::from_slice(raw_json) {
-            Ok(r) => r,
-            Err(e) => return (IpcResponse::Error(e.to_string()), Vec::new()),
-        };
-
-        let mut handler = IpcServerHandler::new(
-            &mut self.storage,
-            &mut self.sessions,
-            &mut self.authenticator,
-        );
-
-        let resp = handler.handle_request(req, caller_pid);
-
-        // Zbierz powiadomienia czasu rzeczywistego dla wszystkich aktywnych sesji
-        let mut outgoing_notifications = Vec::new();
-        // Host przesyła powiadomienia do odpowiednich subskrybentów
-        (resp, outgoing_notifications)
-    }
-}
+// Synchronizacja historii DAG z innym węzłem PDS przez Iroh QUIC
+let applied_changes = daemon.sync_with_peer(peer_addr).await?;
+println!("Zastosowano {} nowych zmian od peera.", applied_changes.len());
 ```
 
 ---
@@ -253,6 +219,17 @@ Moduł `net` udostępnia transport sieciowy oparty na bibliotece **Iroh (QUIC)**
 - `PdsNetworkNode::new(dag: Arc<RwLock<HistoryDag>>) -> Result<Self, NetSyncError>`: tworzy nowy punkt końcowy Iroh z domyślnym presetem n0 (`presets::N0`) i rejestruje ALPN.
 - `PdsNetworkNode::endpoint_id(&self) -> EndpointId`: zwraca unikalny identyfikator klucza publicznego węzła.
 - `PdsNetworkNode::addr(&self) -> EndpointAddr`: pobiera adres punktu końcowego (zawierający relay oraz bezpośrednie IP).
-- `PdsNetworkNode::handle_connection(conn: Connection, dag: Arc<RwLock<HistoryDag>>) -> Result<usize, NetSyncError>`: obsługuje przychodzące połączenie PDS, odpowiada zmianami oraz odbiera zmiany zdalne.
-- `PdsNetworkNode::sync_with_peer(&self, peer_addr: EndpointAddr) -> Result<usize, NetSyncError>`: łączy się ze wskazanym węzłem i przeprowadza dwukierunkową synchronizację brakujących zmian historii DAG.
+- `PdsNetworkNode::handle_connection(conn: Connection, dag: Arc<RwLock<HistoryDag>>) -> Result<Vec<Change>, NetSyncError>`: obsługuje przychodzące połączenie PDS, odpowiada zmianami oraz odbiera i aplikuje zmiany zdalne.
+- `PdsNetworkNode::sync_with_peer(&self, peer_addr: EndpointAddr) -> Result<Vec<Change>, NetSyncError>`: łączy się ze wskazanym węzłem i przeprowadza dwukierunkową synchronizację brakujących zmian historii DAG.
+
+---
+
+## 8. Node Daemon Service (`daemon` module)
+
+Moduł `daemon` udostępnia strukturę [`PdsNodeDaemon`](file:///home/tau2c/Projects/PDS/src/daemon.rs), integrującą:
+- Trwałą bazę danych [`SqliteStorage`](file:///home/tau2c/Projects/PDS/src/storage.rs),
+- Uwierzytelnianie i autoryzację klientów [`ClientAuthenticator`](file:///home/tau2c/Projects/PDS/src/auth.rs),
+- Zarządzanie sesjami i powiadomieniami Pub/Sub [`IpcSessionManager`](file:///home/tau2c/Projects/PDS/src/ipc.rs),
+- P2P transport Iroh [`PdsNetworkNode`](file:///home/tau2c/Projects/PDS/src/net.rs).
+
 
