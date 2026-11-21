@@ -9,7 +9,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use iroh::endpoint::{Connection, Endpoint, presets};
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -66,6 +66,14 @@ pub enum NetAuthMessage {
         expires_at: DateTime<Utc>,
     },
     AuthFailed(String),
+    HeadAnnounce {
+        node_id: String,
+        heads: BTreeSet<crate::id::ChangeId>,
+    },
+    HeadAnnounceReply {
+        heads: BTreeSet<crate::id::ChangeId>,
+        needs_sync: bool,
+    },
 }
 
 /// Request/Response message for /pds/blob/1.0
@@ -88,6 +96,7 @@ pub enum BlobNetResponse {
 }
 
 /// A network node transport wrapper using Iroh QUIC with mutual auth & blob transfer
+#[derive(Clone)]
 pub struct PdsNetworkNode {
     endpoint: Endpoint,
     dag: Arc<RwLock<HistoryDag>>,
@@ -288,7 +297,30 @@ impl PdsNetworkNode {
                     _ => return Err(NetSyncError::Protocol("Expected AuthResponse".into())),
                 }
             }
-            _ => return Err(NetSyncError::Protocol("Expected AuthHello".into())),
+            NetAuthMessage::HeadAnnounce { heads, .. } => {
+                let local_heads = {
+                    let d = dag.read().await;
+                    d.heads().clone()
+                };
+                let needs_sync = local_heads != heads;
+                let reply = NetAuthMessage::HeadAnnounceReply {
+                    heads: local_heads,
+                    needs_sync,
+                };
+                let reply_bytes = serde_json::to_vec(&reply)?;
+                send.write_all(&reply_bytes)
+                    .await
+                    .map_err(|e| NetSyncError::Write(e.to_string()))?;
+                send.finish()
+                    .map_err(|e| NetSyncError::Write(e.to_string()))?;
+                let _ = send.stopped().await;
+                return Ok(Vec::new());
+            }
+            _ => {
+                return Err(NetSyncError::Protocol(
+                    "Expected AuthHello or HeadAnnounce".into(),
+                ));
+            }
         };
 
         // 2. Open bidirectional stream for SyncRequest / SyncResponse
@@ -345,6 +377,7 @@ impl PdsNetworkNode {
                     applied_changes = missing_changes;
                 }
             }
+            let _ = client_send.write_all(b"OK").await;
             let _ = client_send.finish();
         }
 
@@ -470,7 +503,7 @@ impl PdsNetworkNode {
             }
         };
 
-        let (mut rev_send, _rev_recv) = conn.open_bi().await?;
+        let (mut rev_send, mut rev_recv) = conn.open_bi().await?;
         let rev_msg = SyncMessage::SyncResponse {
             missing_changes: changes_for_peer,
             current_heads: self.dag.read().await.heads().clone(),
@@ -480,7 +513,10 @@ impl PdsNetworkNode {
             .write_all(&rev_bytes)
             .await
             .map_err(|e| NetSyncError::Write(e.to_string()))?;
-        let _ = rev_send.finish();
+        rev_send
+            .finish()
+            .map_err(|e| NetSyncError::Write(e.to_string()))?;
+        let _ = rev_recv.read_to_end(64).await;
 
         Ok((session_token, applied_changes))
     }
@@ -524,6 +560,43 @@ impl PdsNetworkNode {
             BlobNetResponse::Unauthorized => Err(NetSyncError::Unauthorized(
                 "Invalid or expired blob session token".into(),
             )),
+        }
+    }
+
+    /// Sends a lightweight HeadAnnounce message to a peer over /pds/sync/1.0
+    /// and returns the peer's heads and whether the peer needs sync.
+    pub async fn announce_heads(
+        &self,
+        peer_addr: EndpointAddr,
+        node_id: String,
+    ) -> Result<(BTreeSet<crate::id::ChangeId>, bool), NetSyncError> {
+        let conn = self
+            .endpoint
+            .connect(peer_addr, PDS_SYNC_ALPN)
+            .await
+            .map_err(NetSyncError::Connect)?;
+
+        let (mut send, mut recv) = conn.open_bi().await?;
+        let local_heads = self.dag.read().await.heads().clone();
+        let announce = NetAuthMessage::HeadAnnounce {
+            node_id,
+            heads: local_heads,
+        };
+        let bytes = serde_json::to_vec(&announce)?;
+        send.write_all(&bytes)
+            .await
+            .map_err(|e| NetSyncError::Write(e.to_string()))?;
+        send.finish()
+            .map_err(|e| NetSyncError::Write(e.to_string()))?;
+
+        let reply_bytes = recv
+            .read_to_end(64 * 1024)
+            .await
+            .map_err(|e| NetSyncError::Read(e.to_string()))?;
+        let reply_msg: NetAuthMessage = serde_json::from_slice(&reply_bytes)?;
+        match reply_msg {
+            NetAuthMessage::HeadAnnounceReply { heads, needs_sync } => Ok((heads, needs_sync)),
+            _ => Err(NetSyncError::Protocol("Expected HeadAnnounceReply".into())),
         }
     }
 }
