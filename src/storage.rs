@@ -32,6 +32,23 @@ pub struct ClientCursor {
     pub updated_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerRoutingRecord {
+    pub node_id: String,
+    pub endpoint_addr_json: String,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobSyncRule {
+    pub id: String,
+    pub app_id: Option<String>,
+    pub entity_type: Option<String>,
+    pub relation_type: Option<String>,
+    pub max_size_bytes: Option<u64>,
+    pub created_at: DateTime<Utc>,
+}
+
 pub type LoadedTrustedNodes = (
     Vec<crate::trust::TrustedNode>,
     std::collections::BTreeMap<String, [u8; 32]>,
@@ -183,6 +200,12 @@ pub struct SqliteStorage {
     blobs: BlobStore,
 }
 
+// rusqlite::Connection is Send but not Sync because it uses RefCell internally.
+// SqliteStorage is always guarded by tokio::sync::RwLock or std::sync::RwLock,
+// guaranteeing exclusive access during mutations and no concurrent calls into conn.
+unsafe impl Send for SqliteStorage {}
+unsafe impl Sync for SqliteStorage {}
+
 impl SqliteStorage {
     pub fn open(root_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
         let root_dir = root_dir.as_ref().to_path_buf();
@@ -220,6 +243,19 @@ impl SqliteStorage {
                 is_revoked INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
                 revoked_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS peer_routing (
+                node_id TEXT PRIMARY KEY,
+                endpoint_addr_json TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS blob_sync_rules (
+                id TEXT PRIMARY KEY,
+                app_id TEXT,
+                entity_type TEXT,
+                relation_type TEXT,
+                max_size_bytes INTEGER,
+                created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_changes_created_at ON changes(created_at);
             ",
@@ -448,6 +484,123 @@ impl SqliteStorage {
         }
 
         Ok((nodes, secrets))
+    }
+
+    pub fn save_peer_routing(
+        &self,
+        node_id: &str,
+        endpoint_addr_json: &str,
+        last_seen_at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let last_seen_str = last_seen_at.to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO peer_routing (node_id, endpoint_addr_json, last_seen_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(node_id) DO UPDATE SET
+                endpoint_addr_json = excluded.endpoint_addr_json,
+                last_seen_at = excluded.last_seen_at",
+            rusqlite::params![node_id, endpoint_addr_json, last_seen_str],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_all_peer_routing(&self) -> Result<Vec<PeerRoutingRecord>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT node_id, endpoint_addr_json, last_seen_at FROM peer_routing")?;
+
+        let rows = stmt.query_map([], |row| {
+            let node_id: String = row.get(0)?;
+            let endpoint_addr_json: String = row.get(1)?;
+            let last_seen_str: String = row.get(2)?;
+            Ok((node_id, endpoint_addr_json, last_seen_str))
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            let (node_id, endpoint_addr_json, last_seen_str) = r?;
+            let last_seen_at = chrono::DateTime::parse_from_rfc3339(&last_seen_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            list.push(PeerRoutingRecord {
+                node_id,
+                endpoint_addr_json,
+                last_seen_at,
+            });
+        }
+        Ok(list)
+    }
+
+    pub fn save_blob_sync_rule(&self, rule: &BlobSyncRule) -> Result<(), StorageError> {
+        let created_at_str = rule.created_at.to_rfc3339();
+        let max_size_i64 = rule.max_size_bytes.map(|s| s as i64);
+        self.conn.execute(
+            "INSERT INTO blob_sync_rules (id, app_id, entity_type, relation_type, max_size_bytes, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                app_id = excluded.app_id,
+                entity_type = excluded.entity_type,
+                relation_type = excluded.relation_type,
+                max_size_bytes = excluded.max_size_bytes",
+            rusqlite::params![
+                rule.id,
+                rule.app_id,
+                rule.entity_type,
+                rule.relation_type,
+                max_size_i64,
+                created_at_str,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_blob_sync_rules(&self) -> Result<Vec<BlobSyncRule>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, app_id, entity_type, relation_type, max_size_bytes, created_at FROM blob_sync_rules"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let app_id: Option<String> = row.get(1)?;
+            let entity_type: Option<String> = row.get(2)?;
+            let relation_type: Option<String> = row.get(3)?;
+            let max_size_i64: Option<i64> = row.get(4)?;
+            let max_size_bytes = max_size_i64.map(|s| s as u64);
+            let created_at_str: String = row.get(5)?;
+            Ok((
+                id,
+                app_id,
+                entity_type,
+                relation_type,
+                max_size_bytes,
+                created_at_str,
+            ))
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            let (id, app_id, entity_type, relation_type, max_size_bytes, created_at_str) = r?;
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            list.push(BlobSyncRule {
+                id,
+                app_id,
+                entity_type,
+                relation_type,
+                max_size_bytes,
+                created_at,
+            });
+        }
+        Ok(list)
+    }
+
+    pub fn delete_blob_sync_rule(&self, rule_id: &str) -> Result<bool, StorageError> {
+        let affected = self.conn.execute(
+            "DELETE FROM blob_sync_rules WHERE id = ?1",
+            rusqlite::params![rule_id],
+        )?;
+        Ok(affected > 0)
     }
 
     /// Migrates existing DiskStorage (history.jsonl & client_cursors.json) into this SqliteStorage instance
