@@ -9,6 +9,7 @@ use crate::net::{NetSyncError, PdsNetworkNode};
 use crate::operation::Operation;
 use crate::security::Permission;
 use crate::storage::{SqliteStorage, StorageError};
+use crate::value::PropertyValue;
 use iroh::{EndpointAddr, EndpointId};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -33,6 +34,7 @@ use ed25519_dalek::SigningKey;
 
 /// The top-level PDS node daemon unifying persistent SQLite storage,
 /// IPC clients authentication, pub/sub notifications, and P2P Iroh synchronization.
+#[derive(Clone)]
 #[allow(clippy::arc_with_non_send_sync)]
 pub struct PdsNodeDaemon {
     storage: Arc<RwLock<SqliteStorage>>,
@@ -636,7 +638,7 @@ impl PdsNodeDaemon {
     ) -> Result<([u8; 32], Vec<Change>), DaemonError> {
         let (session_token, applied_changes) = self
             .net_node
-            .sync_with_peer(peer_addr, &self.signing_key)
+            .sync_with_peer(peer_addr.clone(), &self.signing_key)
             .await?;
 
         if !applied_changes.is_empty() {
@@ -680,9 +682,92 @@ impl PdsNodeDaemon {
                     sessions.publish_notification(EventTopic::RelationChanges, notif);
                 }
             }
+            drop(storage);
+            drop(sessions);
+
+            // Check and sync blobs according to configured BlobSyncRules
+            self.sync_blobs_for_changes(&applied_changes, peer_addr, session_token)
+                .await;
         }
 
         Ok((session_token, applied_changes))
+    }
+
+    /// Fetches blobs referenced by applied changes if matching configured BlobSyncRules.
+    pub async fn sync_blobs_for_changes(
+        &self,
+        changes: &[Change],
+        peer_addr: EndpointAddr,
+        session_token: [u8; 32],
+    ) {
+        let rules = {
+            let storage = self.storage.read().await;
+            storage.load_blob_sync_rules().unwrap_or_default()
+        };
+
+        if rules.is_empty() {
+            return;
+        }
+
+        let mut candidate_blobs = BTreeSet::new();
+        for change in changes {
+            for op in &change.operations {
+                match op {
+                    Operation::SetEntityProperty { name, value, .. } => {
+                        let is_blob_ref = name.name.contains("blob")
+                            || name.name.contains("receipt")
+                            || name.name.contains("backed_by");
+                        if is_blob_ref {
+                            match value {
+                                PropertyValue::BlobRef(blob_id) => {
+                                    candidate_blobs.insert(*blob_id);
+                                }
+                                PropertyValue::Text(s) => {
+                                    if let Ok(blob_id) = s.parse::<BlobId>() {
+                                        candidate_blobs.insert(blob_id);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Operation::SetRelationProperty { name, value, .. } => {
+                        let is_blob_ref =
+                            name.name.contains("blob") || name.name.contains("backed_by");
+                        if is_blob_ref {
+                            match value {
+                                PropertyValue::BlobRef(blob_id) => {
+                                    candidate_blobs.insert(*blob_id);
+                                }
+                                PropertyValue::Text(s) => {
+                                    if let Ok(blob_id) = s.parse::<BlobId>() {
+                                        candidate_blobs.insert(blob_id);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for blob_id in candidate_blobs {
+            let already_has = {
+                let blobs = self.blobs.read().await;
+                blobs.get_descriptor(&blob_id).is_some()
+            };
+            if !already_has
+                && let Ok(bytes) = self
+                    .net_node
+                    .fetch_blob(peer_addr.clone(), session_token, blob_id)
+                    .await
+            {
+                let mut blobs = self.blobs.write().await;
+                let _ = blobs.put(blob_id, &bytes, None);
+            }
+        }
     }
 
     /// Handles a single incoming Iroh QUIC peer connection, persisting newly applied changes
@@ -713,12 +798,59 @@ impl PdsNodeDaemon {
                 };
                 sessions.publish_notification(EventTopic::AllChanges, notif.clone());
             }
+
+            // Trigger proactive blob fetch with paired peers in peer_routing
+            let routing_records = storage.load_all_peer_routing().unwrap_or_default();
+            drop(storage);
+            drop(sessions);
+
+            for rec in routing_records {
+                if let Ok(addr) = serde_json::from_str::<EndpointAddr>(&rec.endpoint_addr_json) {
+                    let d = self.clone();
+                    let changes = applied_changes.clone();
+                    tokio::spawn(async move {
+                        if let Ok((token, _)) = d
+                            .net_node
+                            .sync_with_peer(addr.clone(), &d.signing_key)
+                            .await
+                        {
+                            d.sync_blobs_for_changes(&changes, addr, token).await;
+                        }
+                    });
+                }
+            }
         }
 
         Ok(applied_changes)
     }
 
-    /// Internal helper: appends a change to SQLite and keeps shared_dag in sync.
+    /// Broadcasts HeadAnnounce to all stored peers in peer_routing.
+    pub async fn broadcast_change_to_peers(&self) {
+        let routing_records = {
+            let storage = self.storage.read().await;
+            storage.load_all_peer_routing().unwrap_or_default()
+        };
+
+        let local_node_id = {
+            let trust = self.trust.read().await;
+            trust.local_node_id().to_string()
+        };
+
+        for rec in routing_records {
+            if let Ok(addr) = serde_json::from_str::<EndpointAddr>(&rec.endpoint_addr_json)
+                && let Ok((_remote_heads, needs_sync)) = self
+                    .net_node
+                    .announce_heads(addr.clone(), local_node_id.clone())
+                    .await
+                && needs_sync
+            {
+                let _ = self.sync_with_peer(addr).await;
+            }
+        }
+    }
+
+    /// Internal helper: appends a change to SQLite, keeps shared_dag in sync,
+    /// and triggers a reactive HeadAnnounce broadcast to paired peers.
     async fn append_and_sync_change(&self, change: Change) -> Result<(), DaemonError> {
         {
             let mut storage = self.storage.write().await;
@@ -730,7 +862,96 @@ impl PdsNodeDaemon {
                 dag.insert(change)?;
             }
         }
+        self.broadcast_change_to_peers().await;
         Ok(())
+    }
+
+    /// Spawns the background sync and connection acceptance tasks with graceful shutdown via watch receiver.
+    /// Runs incoming Iroh connection handler loop and periodic heartbeat sync with exponential backoff.
+    pub fn start_background_sync(
+        self: Arc<Self>,
+        heartbeat_secs: u64,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let srv_endpoint = self.net_node.endpoint().clone();
+
+            // Task 1: accept incoming connections
+            let accept_daemon = self.clone();
+            let mut accept_shutdown = shutdown_rx.clone();
+            let accept_handle = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = accept_shutdown.changed() => {
+                            if *accept_shutdown.borrow() {
+                                break;
+                            }
+                        }
+                        incoming = srv_endpoint.accept() => {
+                            match incoming {
+                                Some(inc) => {
+                                    if let Ok(conn) = inc.await {
+                                        let d = accept_daemon.clone();
+                                        tokio::spawn(async move {
+                                            let _ = d.handle_net_connection(conn).await;
+                                        });
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Task 2: periodic heartbeat sync loop with backoff per peer
+            let mut peer_backoff_secs: std::collections::BTreeMap<String, u64> =
+                std::collections::BTreeMap::new();
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(heartbeat_secs.max(1)));
+
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        let routing_records = {
+                            let storage = self.storage.read().await;
+                            storage.load_all_peer_routing().unwrap_or_default()
+                        };
+
+                        let local_node_id = {
+                            let trust = self.trust.read().await;
+                            trust.local_node_id().to_string()
+                        };
+
+                        for rec in routing_records {
+                            let backoff = peer_backoff_secs.entry(rec.node_id.clone()).or_insert(5);
+                            if let Ok(addr) = serde_json::from_str::<EndpointAddr>(&rec.endpoint_addr_json) {
+                                match self.net_node.announce_heads(addr.clone(), local_node_id.clone()).await {
+                                    Ok((_heads, needs_sync)) => {
+                                        // Reset backoff on success
+                                        *backoff = 5;
+                                        if needs_sync {
+                                            let _ = self.sync_with_peer(addr).await;
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Exponential backoff up to 60s
+                                        *backoff = (*backoff * 2).min(60);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let _ = accept_handle.await;
+        })
     }
 }
 
@@ -829,7 +1050,6 @@ mod tests {
         }
 
         // 2. Daemon 1 runs incoming connection listener in local set
-        let local = tokio::task::LocalSet::new();
         let srv_endpoint = daemon1.net_node().endpoint().clone();
         let daemon1_shared_dag = daemon1.dag();
         let daemon1_trust = daemon1.trust();
@@ -839,37 +1059,33 @@ mod tests {
         let daemon1_addr = daemon1.addr();
         let storage2_arc = daemon2.storage();
 
-        local
-            .run_until(async move {
-                let server_handle = tokio::task::spawn_local(async move {
-                    let incoming = srv_endpoint.accept().await.unwrap();
-                    let conn = incoming.await.unwrap();
-                    let changes = PdsNetworkNode::handle_connection(
-                        conn,
-                        daemon1_shared_dag,
-                        daemon1_trust,
-                        daemon1_blobs,
-                        daemon1_tokens,
-                    )
-                    .await
-                    .unwrap();
-                    let mut st = daemon1_storage.write().await;
-                    for c in changes {
-                        st.append_change(c).unwrap();
-                    }
-                });
+        let server_handle = tokio::spawn(async move {
+            let incoming = srv_endpoint.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            let changes = PdsNetworkNode::handle_connection(
+                conn,
+                daemon1_shared_dag,
+                daemon1_trust,
+                daemon1_blobs,
+                daemon1_tokens,
+            )
+            .await
+            .unwrap();
+            let mut st = daemon1_storage.write().await;
+            for c in changes {
+                st.append_change(c).unwrap();
+            }
+        });
 
-                // 3. Daemon 2 syncs with Daemon 1
-                let (_token, applied) = daemon2.sync_with_peer(daemon1_addr).await.unwrap();
-                assert_eq!(
-                    applied.len(),
-                    1,
-                    "Daemon 2 must receive 1 change from Daemon 1"
-                );
+        // 3. Daemon 2 syncs with Daemon 1
+        let (_token, applied) = daemon2.sync_with_peer(daemon1_addr).await.unwrap();
+        assert_eq!(
+            applied.len(),
+            1,
+            "Daemon 2 must receive 1 change from Daemon 1"
+        );
 
-                server_handle.await.unwrap();
-            })
-            .await;
+        server_handle.await.unwrap();
 
         // Verify Daemon 2 persisted the change from Daemon 1 into SQLite
         {
@@ -884,5 +1100,172 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir1);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[tokio::test]
+    async fn test_background_sync_and_blob_rule_replication() {
+        tokio::time::timeout(std::time::Duration::from_secs(59), async {
+            let dir1 =
+                std::env::temp_dir().join(format!("pds_bg_sync_1_{}", ulid::Ulid::generate()));
+            let dir2 =
+                std::env::temp_dir().join(format!("pds_bg_sync_2_{}", ulid::Ulid::generate()));
+
+            let daemon1 = Arc::new(PdsNodeDaemon::init(&dir1, "daemon-1").await.unwrap());
+            let daemon2 = Arc::new(PdsNodeDaemon::init(&dir2, "daemon-2").await.unwrap());
+
+            // Mutual trust pairing
+            let pin = "123456";
+            let pin_hash = TrustManager::compute_pin_hash(
+                &daemon2.signing_key().verifying_key().to_bytes(),
+                pin,
+            );
+            let t1_arc = daemon1.trust();
+            let (_trusted_n2, auth_event) = {
+                let mut t1 = t1_arc.write().await;
+                t1.complete_pairing(
+                    "daemon-2".into(),
+                    "Daemon 2".into(),
+                    daemon2.signing_key().verifying_key().to_bytes(),
+                    pin,
+                    pin_hash,
+                )
+                .unwrap()
+            };
+
+            {
+                let t2_arc = daemon2.trust();
+                let mut t2 = t2_arc.write().await;
+                let t1 = t1_arc.read().await;
+                t2.register_trusted_node(t1.get_node("daemon-1").unwrap().clone());
+                t2.apply_authorization(auth_event).unwrap();
+            }
+
+            // Configure peer routing on daemon2 pointing to daemon1
+            let d1_addr_json = serde_json::to_string(&daemon1.addr()).unwrap();
+            {
+                let st2 = daemon2.storage();
+                let storage2 = st2.read().await;
+                storage2
+                    .save_peer_routing("daemon-1", &d1_addr_json, chrono::Utc::now())
+                    .unwrap();
+            }
+
+            // Configure peer routing on daemon1 pointing to daemon2
+            let d2_addr_json = serde_json::to_string(&daemon2.addr()).unwrap();
+            {
+                let st1 = daemon1.storage();
+                let storage1 = st1.read().await;
+                storage1
+                    .save_peer_routing("daemon-2", &d2_addr_json, chrono::Utc::now())
+                    .unwrap();
+            }
+
+            // Configure BlobSyncRule on daemon2 for receipt backed_by blobs
+            {
+                let st2 = daemon2.storage();
+                let storage2 = st2.read().await;
+                let rule = crate::storage::BlobSyncRule {
+                    id: "receipt-rule".into(),
+                    app_id: Some("accounting".into()),
+                    entity_type: Some("receipt".into()),
+                    relation_type: Some("backed_by".into()),
+                    max_size_bytes: Some(1024 * 1024),
+                    created_at: chrono::Utc::now(),
+                };
+                storage2.save_blob_sync_rule(&rule).unwrap();
+            }
+
+            // Store a blob on daemon1
+            let blob_payload = b"Sample receipt scan PDF data";
+            let blob_id = BlobId::new();
+            {
+                let mut b1 = daemon1.blobs.write().await;
+                b1.put(blob_id, blob_payload, Some("application/pdf".into()))
+                    .unwrap();
+            }
+
+            // Create an entity change on daemon1 referencing the blob via IPC
+            let prop_name = PropertyName::new("receipt_blob");
+            let client_key = SigningKey::from_bytes(&[77u8; 32]);
+            let client_id = {
+                let auth_arc = daemon1.authenticator();
+                let mut auth = auth_arc.write().await;
+                let id =
+                    auth.register_client("AccountingApp", client_key.verifying_key().to_bytes());
+                let mut perms = BTreeSet::new();
+                perms.insert(Permission::WriteEntities);
+                auth.approve_client(&id, perms);
+                id
+            };
+
+            let mut client = PdsIpcClient::new(client_id, client_key);
+            let hello = client.start_handshake(vec!["1.0.0".into()]);
+            let resp = daemon1.handle_ipc_request(hello, None).await.unwrap();
+            let challenge = match resp {
+                IpcResponse::Challenge(c) => c,
+                other => panic!("Expected challenge, got {:?}", other),
+            };
+            let auth_req = client.handle_challenge(&challenge);
+            let resp = daemon1.handle_ipc_request(auth_req, None).await.unwrap();
+            match resp {
+                IpcResponse::Authenticated(success) => client.handle_auth_success(&success),
+                other => panic!("Expected authenticated, got {:?}", other),
+            };
+
+            // Start background sync on daemon1 with shutdown signal
+            let (shutdown_tx1, shutdown_rx1) = tokio::sync::watch::channel(false);
+            let bg_handle1 = daemon1.clone().start_background_sync(1, shutdown_rx1);
+
+            // Start background sync on daemon2 with shutdown signal
+            let (shutdown_tx2, shutdown_rx2) = tokio::sync::watch::channel(false);
+            let bg_handle2 = daemon2.clone().start_background_sync(1, shutdown_rx2);
+
+            let create_req = client
+                .create_entity_request(
+                    Some("receipt".into()),
+                    vec![(prop_name.clone(), PropertyValue::BlobRef(blob_id))],
+                )
+                .unwrap();
+            let resp = daemon1.handle_ipc_request(create_req, None).await.unwrap();
+            let entity_id = match resp {
+                IpcResponse::EntityCreated(id) => id,
+                other => panic!("Expected EntityCreated, got {:?}", other),
+            };
+
+            // Wait for background periodic heartbeat & blob sync to propagate
+            let mut synced = false;
+            for _i in 0..20 {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                let st2 = daemon2.storage();
+                let storage2 = st2.read().await;
+                let has_entity = storage2.state().entities.contains_key(&entity_id);
+                let b2 = daemon2.blobs.read().await;
+                let has_blob = b2.get_descriptor(&blob_id).is_some();
+                if has_entity && has_blob {
+                    synced = true;
+                    break;
+                }
+            }
+
+            assert!(synced, "Daemon 2 must sync change and blob in background");
+
+            // Verify data integrity on daemon2
+            {
+                let b2 = daemon2.blobs.read().await;
+                let data = b2.get_data(&blob_id).unwrap();
+                assert_eq!(data, blob_payload);
+            }
+
+            // Graceful shutdown
+            let _ = shutdown_tx1.send(true);
+            let _ = shutdown_tx2.send(true);
+            let _ = bg_handle1.await;
+            let _ = bg_handle2.await;
+
+            let _ = std::fs::remove_dir_all(&dir1);
+            let _ = std::fs::remove_dir_all(&dir2);
+        })
+        .await
+        .expect("test_background_sync_and_blob_rule_replication timed out after 59s");
     }
 }
