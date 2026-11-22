@@ -53,7 +53,7 @@ pub use np::{
 };
 pub use operation::Operation;
 pub use provenance::{Activity, ActivityId, ActivityStatus, ProvenanceTarget};
-pub use relation::Relation;
+pub use relation::{Relation, RelationError, RelationMember};
 pub use schema::{EntitySchema, PropertyDefinition, PropertyType, SchemaValidationError};
 pub use security::{AccessController, AppRegistration, Permission, SecurityError};
 pub use state::DatasetState;
