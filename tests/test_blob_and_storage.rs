@@ -101,3 +101,97 @@ fn test_disk_storage_reopen_and_persistence() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn test_encrypted_blob_storage_and_recovery() {
+    let root = std::env::temp_dir().join(format!("pds_test_enc_blob_{}", BlobId::new()));
+    let blob_id = BlobId::new();
+    let secret = b"Decentralized secure patient record biometric image data";
+    let mut keystore = pds::KeyStore::new();
+    let (key_id, _) = keystore.generate_key();
+
+    {
+        let mut storage = DiskStorage::open(&root).expect("Failed to open storage");
+        let desc = storage
+            .blobs_mut()
+            .put_encrypted(blob_id, secret, key_id, &keystore, Some("image/png".into()))
+            .expect("Failed to put encrypted blob");
+        assert_eq!(desc.id, blob_id);
+        assert!(matches!(
+            desc.encryption,
+            pds::BlobEncryption::Encrypted { .. }
+        ));
+    }
+
+    // Reopen storage and verify persistence and decryption
+    {
+        let storage = DiskStorage::open(&root).expect("Failed to reopen storage");
+        let desc = storage
+            .blobs()
+            .get_descriptor(&blob_id)
+            .expect("Descriptor not found");
+        assert_eq!(desc.id, blob_id);
+
+        let raw = storage
+            .blobs()
+            .get_raw_data(&blob_id)
+            .expect("Failed to read raw");
+        assert_ne!(raw, secret);
+
+        let decrypted = storage
+            .blobs()
+            .get_decrypted_data(&blob_id, &keystore)
+            .expect("Failed to decrypt blob");
+        assert_eq!(decrypted, secret);
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_sqlite_encrypted_blob_storage_and_recovery() {
+    let root = std::env::temp_dir().join(format!("pds_test_sql_enc_blob_{}", BlobId::new()));
+    let blob_id = BlobId::new();
+    let secret = b"SQLite stored encrypted financial ledger payload";
+    let mut keystore = pds::KeyStore::new();
+    let (key_id, _) = keystore.generate_key();
+
+    {
+        let mut storage = pds::SqliteStorage::open(&root).expect("Failed to open sqlite storage");
+        let desc = storage
+            .blobs_mut()
+            .put_encrypted(
+                blob_id,
+                secret,
+                key_id,
+                &keystore,
+                Some("application/json".into()),
+            )
+            .expect("Failed to put encrypted blob");
+        assert_eq!(desc.id, blob_id);
+    }
+
+    // Reopen sqlite storage and verify persistence and decryption
+    {
+        let storage = pds::SqliteStorage::open(&root).expect("Failed to reopen sqlite storage");
+        let desc = storage
+            .blobs()
+            .get_descriptor(&blob_id)
+            .expect("Descriptor not found");
+        assert_eq!(desc.id, blob_id);
+
+        let raw = storage
+            .blobs()
+            .get_raw_data(&blob_id)
+            .expect("Failed to read raw");
+        assert_ne!(raw, secret);
+
+        let decrypted = storage
+            .blobs()
+            .get_decrypted_data(&blob_id, &keystore)
+            .expect("Failed to decrypt blob");
+        assert_eq!(decrypted, secret);
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}

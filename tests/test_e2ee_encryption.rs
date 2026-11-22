@@ -121,3 +121,74 @@ fn test_e2ee_blind_change_dag_replication() {
         .expect("Relay failed to connect child change");
     assert_eq!(dag.len(), 2);
 }
+
+#[test]
+fn test_e2ee_encrypted_blob_in_dataset_state() {
+    let mut keystore = KeyStore::new();
+    let (key_id, _) = keystore.generate_key();
+
+    let temp_dir = std::env::temp_dir().join(format!("pds_e2ee_blob_{}", pds::BlobId::new()));
+    let mut blob_store = pds::BlobStore::new(&temp_dir).unwrap();
+
+    let secret_file_bytes = b"CONFIDENTIAL HEALTH REPORT ATTACHMENT";
+    let blob_id = pds::BlobId::new();
+
+    let desc = blob_store
+        .put_encrypted(
+            blob_id,
+            secret_file_bytes,
+            key_id,
+            &keystore,
+            Some("application/pdf".into()),
+        )
+        .unwrap();
+
+    assert_eq!(desc.id, blob_id);
+    assert_eq!(
+        desc.encryption,
+        pds::BlobEncryption::Encrypted {
+            key_id,
+            nonce: match desc.encryption {
+                pds::BlobEncryption::Encrypted { nonce, .. } => nonce,
+                _ => unreachable!(),
+            },
+            plaintext_size_bytes: secret_file_bytes.len() as u64,
+        }
+    );
+
+    // Attach blob to an entity via PropertyValue::BlobRef
+    let mut dag = HistoryDag::new();
+    let entity_id = EntityId::new();
+    let change = Change::new(
+        ChangeId::new(),
+        vec![],
+        ChangeMetadata::new("doc-creator"),
+        vec![
+            Operation::CreateEntity {
+                entity_id,
+                entity_type: Some("attachment".to_string()),
+            },
+            Operation::SetEntityProperty {
+                entity_id,
+                name: "file".into(),
+                value: PropertyValue::BlobRef(blob_id),
+            },
+        ],
+    );
+
+    dag.insert(change).unwrap();
+    let state = DatasetState::from_dag(&dag);
+    let entity = state.entities.get(&entity_id).unwrap();
+
+    let blob_ref = match entity.get_property(&PropertyName::from("file")).unwrap() {
+        PropertyValue::BlobRef(id) => *id,
+        other => panic!("Expected BlobRef, got {:?}", other),
+    };
+    assert_eq!(blob_ref, blob_id);
+
+    // Retrieve and decrypt
+    let decrypted = blob_store.get_decrypted_data(&blob_ref, &keystore).unwrap();
+    assert_eq!(decrypted, secret_file_bytes);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
