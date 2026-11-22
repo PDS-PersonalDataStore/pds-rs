@@ -149,7 +149,7 @@ for notif in pending_notifs {
 - `UpdateEntity { session_id, entity_id, set_properties, remove_properties }`: Modyfikacja atrybutów encji.
 - `DeleteEntity { session_id, entity_id }`: Usunięcie encji (z kaskadowym usunięciem jej relacji).
 - `GetRelation { session_id, relation_id }`: Pobranie relacji.
-- `CreateRelation { session_id, relation_type, source, target }`: Połączenie encji relacją.
+- `CreateRelation { session_id, relation_type, members, source, target }`: Utworzenie relacji wielostronnej z rolami (lub binarnej `source`/`target`).
 - `UpdateRelation { session_id, relation_id, set_properties, remove_properties }`: Modyfikacja atrybutów relacji.
 - `DeleteRelation { session_id, relation_id }`: Usunięcie relacji.
 - `GetBlob { session_id, blob_id }`: Pobranie zawartości binarnej z CAS.
