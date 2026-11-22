@@ -122,3 +122,74 @@ fn test_ipc_authentication_and_unauthorized_rejections() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_multimember_relation_ipc_flow() {
+    let temp_dir = std::env::temp_dir().join(format!("pds_test_ipc_rel_{}", pds::BlobId::new()));
+    let mut storage = DiskStorage::open(&temp_dir).unwrap();
+    let mut session_manager = IpcSessionManager::new();
+    let mut authenticator = ClientAuthenticator::new("server-srv-rel");
+
+    let signing_key = SigningKey::from_bytes(&[12u8; 32]);
+    let mut permissions = BTreeSet::new();
+    permissions.insert(Permission::ReadEntities);
+    permissions.insert(Permission::WriteEntities);
+
+    let client_id =
+        authenticator.register_client("rel_client", signing_key.verifying_key().to_bytes());
+    authenticator.approve_client(&client_id, permissions);
+
+    let mut handler = IpcServerHandler::new(&mut storage, &mut session_manager, &mut authenticator);
+    let mut client = pds::PdsIpcClient::new(client_id, signing_key);
+
+    let hello_req = client.start_handshake(vec!["1.0.0".into()]);
+    let challenge = match handler.handle_request(hello_req, Some(101)) {
+        IpcResponse::Challenge(c) => c,
+        other => panic!("Expected challenge, got {:?}", other),
+    };
+    let auth_req = client.handle_challenge(&challenge);
+    match handler.handle_request(auth_req, Some(101)) {
+        IpcResponse::Authenticated(success) => client.handle_auth_success(&success),
+        other => panic!("Expected authenticated, got {:?}", other),
+    };
+
+    let e1 = pds::EntityId::new();
+    let e2 = pds::EntityId::new();
+    let e3 = pds::EntityId::new();
+
+    // Multimember relation with 3 members
+    let members = vec![
+        pds::RelationMember::new(e1, "initiator"),
+        pds::RelationMember::new(e2, "participant"),
+        pds::RelationMember::new(e3, "observer"),
+    ];
+
+    let create_rel_req = client
+        .create_multimember_relation_request("meeting".into(), members.clone())
+        .unwrap();
+
+    let rel_id = match handler.handle_request(create_rel_req, Some(101)) {
+        IpcResponse::RelationCreated(id) => id,
+        other => panic!("Expected RelationCreated, got {:?}", other),
+    };
+
+    let get_rel_req = client.get_relation_request(rel_id).unwrap();
+    match handler.handle_request(get_rel_req, Some(101)) {
+        IpcResponse::Relation(Some(rel)) => {
+            assert_eq!(rel.id, rel_id);
+            assert_eq!(rel.relation_type, "meeting");
+            assert_eq!(rel.members.len(), 3);
+            assert_eq!(rel.members, members);
+        }
+        other => panic!("Expected Relation, got {:?}", other),
+    }
+
+    // Creating relation with empty members must be rejected
+    assert!(
+        client
+            .create_multimember_relation_request("invalid".into(), vec![])
+            .is_err()
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}

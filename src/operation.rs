@@ -24,8 +24,12 @@ enum RawOperation {
     CreateRelation {
         relation_id: RelationId,
         relation_type: String,
-        source: EntityId,
-        target: EntityId,
+        #[serde(default)]
+        members: Vec<crate::relation::RelationMember>,
+        #[serde(default)]
+        source: Option<EntityId>,
+        #[serde(default)]
+        target: Option<EntityId>,
     },
     SetRelationProperty {
         relation_id: RelationId,
@@ -73,8 +77,7 @@ pub enum Operation {
     CreateRelation {
         relation_id: RelationId,
         relation_type: String,
-        source: EntityId,
-        target: EntityId,
+        members: Vec<crate::relation::RelationMember>,
     },
     SetRelationProperty {
         relation_id: RelationId,
@@ -120,14 +123,24 @@ impl From<RawOperation> for Operation {
             RawOperation::CreateRelation {
                 relation_id,
                 relation_type,
+                mut members,
                 source,
                 target,
-            } => Operation::CreateRelation {
-                relation_id,
-                relation_type,
-                source,
-                target,
-            },
+            } => {
+                if members.is_empty() {
+                    if let Some(src) = source {
+                        members.push(crate::relation::RelationMember::new(src, "source"));
+                    }
+                    if let Some(tgt) = target {
+                        members.push(crate::relation::RelationMember::new(tgt, "target"));
+                    }
+                }
+                Operation::CreateRelation {
+                    relation_id,
+                    relation_type,
+                    members,
+                }
+            }
             RawOperation::SetRelationProperty {
                 relation_id,
                 name,
@@ -184,14 +197,24 @@ impl From<Operation> for OperationWire {
             Operation::CreateRelation {
                 relation_id,
                 relation_type,
-                source,
-                target,
-            } => OperationWire::Known(RawOperation::CreateRelation {
-                relation_id,
-                relation_type,
-                source,
-                target,
-            }),
+                members,
+            } => {
+                let source = members
+                    .iter()
+                    .find(|m| m.role == "source")
+                    .map(|m| m.entity_id);
+                let target = members
+                    .iter()
+                    .find(|m| m.role == "target")
+                    .map(|m| m.entity_id);
+                OperationWire::Known(RawOperation::CreateRelation {
+                    relation_id,
+                    relation_type,
+                    members,
+                    source,
+                    target,
+                })
+            }
             Operation::SetRelationProperty {
                 relation_id,
                 name,

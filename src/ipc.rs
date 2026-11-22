@@ -2,9 +2,9 @@ use crate::auth::{AuthChallenge, AuthSuccess, ClientAuth, ClientHello};
 use crate::blob::BlobDescriptor;
 use crate::change::Change;
 use crate::entity::Entity;
-use crate::id::{BlobId, ChangeId, EntityId, RelationId};
+use crate::id::{BlobId, ChangeId, EntityId, KeyId, RelationId};
 use crate::operation::Operation;
-use crate::relation::Relation;
+use crate::relation::{Relation, RelationMember};
 use crate::security::Permission;
 use crate::storage::DiskStorage;
 use crate::value::{PropertyName, PropertyValue};
@@ -27,6 +27,16 @@ pub enum IpcRequest {
         entity_type: Option<String>,
         properties: Vec<(PropertyName, PropertyValue)>,
     },
+    UpdateEntity {
+        session_id: String,
+        entity_id: EntityId,
+        set_properties: Vec<(PropertyName, PropertyValue)>,
+        remove_properties: Vec<PropertyName>,
+    },
+    DeleteEntity {
+        session_id: String,
+        entity_id: EntityId,
+    },
     GetRelation {
         session_id: String,
         relation_id: RelationId,
@@ -34,16 +44,40 @@ pub enum IpcRequest {
     CreateRelation {
         session_id: String,
         relation_type: String,
-        source: EntityId,
-        target: EntityId,
+        #[serde(default)]
+        members: Vec<RelationMember>,
+        #[serde(default)]
+        source: Option<EntityId>,
+        #[serde(default)]
+        target: Option<EntityId>,
+    },
+    UpdateRelation {
+        session_id: String,
+        relation_id: RelationId,
+        set_properties: Vec<(PropertyName, PropertyValue)>,
+        remove_properties: Vec<PropertyName>,
+    },
+    DeleteRelation {
+        session_id: String,
+        relation_id: RelationId,
     },
     GetBlob {
+        session_id: String,
+        blob_id: BlobId,
+    },
+    GetBlobDescriptor {
         session_id: String,
         blob_id: BlobId,
     },
     PutBlob {
         session_id: String,
         data: Vec<u8>,
+        media_type: Option<String>,
+    },
+    PutEncryptedBlob {
+        session_id: String,
+        plaintext: Vec<u8>,
+        key_id: KeyId,
         media_type: Option<String>,
     },
     PollChanges {
@@ -97,9 +131,14 @@ pub enum IpcResponse {
     Authenticated(AuthSuccess),
     Entity(Option<Entity>),
     EntityCreated(EntityId),
+    EntityUpdated(EntityId),
+    EntityDeleted(EntityId),
     Relation(Option<Relation>),
     RelationCreated(RelationId),
+    RelationUpdated(RelationId),
+    RelationDeleted(RelationId),
     Blob(Vec<u8>),
+    BlobDescriptor(Option<BlobDescriptor>),
     BlobCreated(BlobDescriptor),
     Changes {
         changes: Vec<Change>,
@@ -326,6 +365,87 @@ impl<'a> IpcServerHandler<'a> {
 
                 IpcResponse::EntityCreated(entity_id)
             }
+            IpcRequest::UpdateEntity {
+                session_id,
+                entity_id,
+                set_properties,
+                remove_properties,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteEntities)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                if !self.storage.state().entities.contains_key(&entity_id) {
+                    return IpcResponse::Error(format!("Entity not found: {entity_id}"));
+                }
+
+                let mut ops = Vec::new();
+                for (name, value) in set_properties {
+                    ops.push(Operation::SetEntityProperty {
+                        entity_id,
+                        name,
+                        value,
+                    });
+                }
+                for name in remove_properties {
+                    ops.push(Operation::RemoveEntityProperty { entity_id, name });
+                }
+
+                let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
+                let meta = crate::change::ChangeMetadata::new("ipc-client");
+                let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
+
+                let change_id = change.id;
+                if let Err(err) = self.storage.append_change(change.clone()) {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                let notif = IpcNotification::ChangeAppended { change_id, change };
+                self.sessions
+                    .publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::EntityChanges, notif);
+
+                IpcResponse::EntityUpdated(entity_id)
+            }
+            IpcRequest::DeleteEntity {
+                session_id,
+                entity_id,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteEntities)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                if !self.storage.state().entities.contains_key(&entity_id) {
+                    return IpcResponse::Error(format!("Entity not found: {entity_id}"));
+                }
+
+                let ops = vec![Operation::DeleteEntity { entity_id }];
+                let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
+                let meta = crate::change::ChangeMetadata::new("ipc-client");
+                let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
+
+                let change_id = change.id;
+                if let Err(err) = self.storage.append_change(change.clone()) {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                let notif = IpcNotification::ChangeAppended { change_id, change };
+                self.sessions
+                    .publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::EntityChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::RelationChanges, notif);
+
+                IpcResponse::EntityDeleted(entity_id)
+            }
             IpcRequest::GetRelation {
                 session_id,
                 relation_id,
@@ -342,6 +462,7 @@ impl<'a> IpcServerHandler<'a> {
             IpcRequest::CreateRelation {
                 session_id,
                 relation_type,
+                mut members,
                 source,
                 target,
             } => {
@@ -352,12 +473,26 @@ impl<'a> IpcServerHandler<'a> {
                     return IpcResponse::Error(err.to_string());
                 }
 
+                if members.is_empty() {
+                    if let Some(src) = source {
+                        members.push(RelationMember::new(src, "source"));
+                    }
+                    if let Some(tgt) = target {
+                        members.push(RelationMember::new(tgt, "target"));
+                    }
+                }
+
+                if members.is_empty() {
+                    return IpcResponse::Error(
+                        "Relation must contain at least one member".to_string(),
+                    );
+                }
+
                 let relation_id = RelationId::new();
                 let ops = vec![Operation::CreateRelation {
                     relation_id,
                     relation_type,
-                    source,
-                    target,
+                    members,
                 }];
 
                 let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
@@ -377,6 +512,85 @@ impl<'a> IpcServerHandler<'a> {
 
                 IpcResponse::RelationCreated(relation_id)
             }
+            IpcRequest::UpdateRelation {
+                session_id,
+                relation_id,
+                set_properties,
+                remove_properties,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteEntities)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                if !self.storage.state().relations.contains_key(&relation_id) {
+                    return IpcResponse::Error(format!("Relation not found: {relation_id}"));
+                }
+
+                let mut ops = Vec::new();
+                for (name, value) in set_properties {
+                    ops.push(Operation::SetRelationProperty {
+                        relation_id,
+                        name,
+                        value,
+                    });
+                }
+                for name in remove_properties {
+                    ops.push(Operation::RemoveRelationProperty { relation_id, name });
+                }
+
+                let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
+                let meta = crate::change::ChangeMetadata::new("ipc-client");
+                let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
+
+                let change_id = change.id;
+                if let Err(err) = self.storage.append_change(change.clone()) {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                let notif = IpcNotification::ChangeAppended { change_id, change };
+                self.sessions
+                    .publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::RelationChanges, notif);
+
+                IpcResponse::RelationUpdated(relation_id)
+            }
+            IpcRequest::DeleteRelation {
+                session_id,
+                relation_id,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteEntities)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                if !self.storage.state().relations.contains_key(&relation_id) {
+                    return IpcResponse::Error(format!("Relation not found: {relation_id}"));
+                }
+
+                let ops = vec![Operation::DeleteRelation { relation_id }];
+                let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
+                let meta = crate::change::ChangeMetadata::new("ipc-client");
+                let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);
+
+                let change_id = change.id;
+                if let Err(err) = self.storage.append_change(change.clone()) {
+                    return IpcResponse::Error(err.to_string());
+                }
+
+                let notif = IpcNotification::ChangeAppended { change_id, change };
+                self.sessions
+                    .publish_notification(EventTopic::AllChanges, notif.clone());
+                self.sessions
+                    .publish_notification(EventTopic::RelationChanges, notif);
+
+                IpcResponse::RelationDeleted(relation_id)
+            }
             IpcRequest::GetBlob {
                 session_id,
                 blob_id,
@@ -391,6 +605,19 @@ impl<'a> IpcServerHandler<'a> {
                     Ok(data) => IpcResponse::Blob(data),
                     Err(err) => IpcResponse::Error(err.to_string()),
                 }
+            }
+            IpcRequest::GetBlobDescriptor {
+                session_id,
+                blob_id,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadBlobs)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                let desc = self.storage.blobs().get_descriptor(&blob_id).cloned();
+                IpcResponse::BlobDescriptor(desc)
             }
             IpcRequest::PutBlob {
                 session_id,
@@ -416,6 +643,22 @@ impl<'a> IpcServerHandler<'a> {
                     }
                     Err(err) => IpcResponse::Error(err.to_string()),
                 }
+            }
+            IpcRequest::PutEncryptedBlob {
+                session_id,
+                plaintext: _,
+                key_id: _,
+                media_type: _,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteBlobs)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                IpcResponse::Error(
+                    "Encrypted blob storage via standalone handler requires keystore".into(),
+                )
             }
             IpcRequest::PollChanges {
                 session_id,
@@ -588,6 +831,8 @@ pub enum IpcClientError {
     NoActiveSession,
     #[error("Server returned error: {0}")]
     ServerError(String),
+    #[error("Relation error: {0}")]
+    Relation(#[from] crate::relation::RelationError),
     #[error("Unexpected server response")]
     UnexpectedResponse,
 }
@@ -675,6 +920,29 @@ impl PdsIpcClient {
         })
     }
 
+    pub fn update_entity_request(
+        &self,
+        entity_id: EntityId,
+        set_properties: Vec<(PropertyName, PropertyValue)>,
+        remove_properties: Vec<PropertyName>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::UpdateEntity {
+            session_id,
+            entity_id,
+            set_properties,
+            remove_properties,
+        })
+    }
+
+    pub fn delete_entity_request(&self, entity_id: EntityId) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::DeleteEntity {
+            session_id,
+            entity_id,
+        })
+    }
+
     pub fn get_relation_request(
         &self,
         relation_id: RelationId,
@@ -692,18 +960,79 @@ impl PdsIpcClient {
         source: EntityId,
         target: EntityId,
     ) -> Result<IpcRequest, IpcClientError> {
+        let members = vec![
+            RelationMember::new(source, "source"),
+            RelationMember::new(target, "target"),
+        ];
+        self.create_multimember_relation_request(relation_type, members)
+    }
+
+    pub fn create_multimember_relation_request(
+        &self,
+        relation_type: String,
+        members: Vec<RelationMember>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        if members.is_empty() {
+            return Err(crate::relation::RelationError::EmptyMembers.into());
+        }
         let session_id = self.require_session()?.to_string();
+        let source = members
+            .iter()
+            .find(|m| m.role == "source")
+            .map(|m| m.entity_id);
+        let target = members
+            .iter()
+            .find(|m| m.role == "target")
+            .map(|m| m.entity_id);
         Ok(IpcRequest::CreateRelation {
             session_id,
             relation_type,
+            members,
             source,
             target,
+        })
+    }
+
+    pub fn update_relation_request(
+        &self,
+        relation_id: RelationId,
+        set_properties: Vec<(PropertyName, PropertyValue)>,
+        remove_properties: Vec<PropertyName>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::UpdateRelation {
+            session_id,
+            relation_id,
+            set_properties,
+            remove_properties,
+        })
+    }
+
+    pub fn delete_relation_request(
+        &self,
+        relation_id: RelationId,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::DeleteRelation {
+            session_id,
+            relation_id,
         })
     }
 
     pub fn get_blob_request(&self, blob_id: BlobId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::GetBlob {
+            session_id,
+            blob_id,
+        })
+    }
+
+    pub fn get_blob_descriptor_request(
+        &self,
+        blob_id: BlobId,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::GetBlobDescriptor {
             session_id,
             blob_id,
         })
@@ -718,6 +1047,21 @@ impl PdsIpcClient {
         Ok(IpcRequest::PutBlob {
             session_id,
             data,
+            media_type,
+        })
+    }
+
+    pub fn put_encrypted_blob_request(
+        &self,
+        plaintext: Vec<u8>,
+        key_id: KeyId,
+        media_type: Option<String>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::PutEncryptedBlob {
+            session_id,
+            plaintext,
+            key_id,
             media_type,
         })
     }
@@ -1290,6 +1634,128 @@ mod tests {
             }
             other => panic!("Expected Changes, got {:?}", other),
         }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_pds_ipc_entity_and_relation_mutations() {
+        let temp_dir = std::env::temp_dir().join(format!("pds_mut_test_{}", EntityId::new()));
+        let mut storage = DiskStorage::open(&temp_dir).unwrap();
+        let mut sessions = IpcSessionManager::new();
+        let mut authenticator = ClientAuthenticator::new("pds-mut-node");
+
+        let signing_key = SigningKey::from_bytes(&[88u8; 32]);
+        let client_id =
+            authenticator.register_client("EditorApp", signing_key.verifying_key().to_bytes());
+        authenticator.approve_client(&client_id, {
+            let mut perms = BTreeSet::new();
+            perms.insert(Permission::ReadEntities);
+            perms.insert(Permission::WriteEntities);
+            perms.insert(Permission::ReadHistory);
+            perms
+        });
+
+        let mut client = PdsIpcClient::new(client_id, signing_key);
+        let mut handler = IpcServerHandler::new(&mut storage, &mut sessions, &mut authenticator);
+
+        let challenge = match handler
+            .handle_request(client.start_handshake(vec!["entities".into()]), Some(1))
+        {
+            IpcResponse::Challenge(c) => c,
+            other => panic!("Expected challenge, got {:?}", other),
+        };
+        let success = match handler.handle_request(client.handle_challenge(&challenge), Some(1)) {
+            IpcResponse::Authenticated(s) => s,
+            other => panic!("Expected Authenticated, got {:?}", other),
+        };
+        client.handle_auth_success(&success);
+
+        // 1. Create two entities
+        let e1_req = client
+            .create_entity_request(
+                Some("doc".into()),
+                vec![("title".into(), PropertyValue::Text("Stary tytul".into()))],
+            )
+            .unwrap();
+        let e1_id = match handler.handle_request(e1_req, Some(1)) {
+            IpcResponse::EntityCreated(id) => id,
+            other => panic!("Expected EntityCreated, got {:?}", other),
+        };
+
+        let e2_req = client
+            .create_entity_request(
+                Some("user".into()),
+                vec![("name".into(), PropertyValue::Text("Jan".into()))],
+            )
+            .unwrap();
+        let e2_id = match handler.handle_request(e2_req, Some(1)) {
+            IpcResponse::EntityCreated(id) => id,
+            other => panic!("Expected EntityCreated, got {:?}", other),
+        };
+
+        // 2. Update entity e1
+        let update_e1 = client
+            .update_entity_request(
+                e1_id,
+                vec![("title".into(), PropertyValue::Text("Nowy tytul".into()))],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(
+            handler.handle_request(update_e1, Some(1)),
+            IpcResponse::EntityUpdated(e1_id)
+        );
+
+        let ent = handler.storage.state().entities.get(&e1_id).unwrap();
+        assert_eq!(
+            ent.get_property(&"title".into()),
+            Some(&PropertyValue::Text("Nowy tytul".into()))
+        );
+
+        // 3. Create relation e1 -> e2
+        let rel_req = client
+            .create_relation_request("author_of".into(), e2_id, e1_id)
+            .unwrap();
+        let rel_id = match handler.handle_request(rel_req, Some(1)) {
+            IpcResponse::RelationCreated(id) => id,
+            other => panic!("Expected RelationCreated, got {:?}", other),
+        };
+        assert!(handler.storage.state().relations.contains_key(&rel_id));
+
+        // 4. Update relation
+        let update_rel = client
+            .update_relation_request(
+                rel_id,
+                vec![("weight".into(), PropertyValue::Int(10))],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(
+            handler.handle_request(update_rel, Some(1)),
+            IpcResponse::RelationUpdated(rel_id)
+        );
+        let rel = handler.storage.state().relations.get(&rel_id).unwrap();
+        assert_eq!(
+            rel.get_property(&"weight".into()),
+            Some(&PropertyValue::Int(10))
+        );
+
+        // 5. Delete relation
+        let del_rel = client.delete_relation_request(rel_id).unwrap();
+        assert_eq!(
+            handler.handle_request(del_rel, Some(1)),
+            IpcResponse::RelationDeleted(rel_id)
+        );
+        assert!(!handler.storage.state().relations.contains_key(&rel_id));
+
+        // 6. Delete entity e2
+        let del_e2 = client.delete_entity_request(e2_id).unwrap();
+        assert_eq!(
+            handler.handle_request(del_e2, Some(1)),
+            IpcResponse::EntityDeleted(e2_id)
+        );
+        assert!(!handler.storage.state().entities.contains_key(&e2_id));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

@@ -32,14 +32,15 @@ fn test_relation_creation() {
     let id = RelationId::new();
     let from = EntityId::new();
     let to = EntityId::new();
-    let mut relation = Relation::new(id, "authored_by", from, to);
+    let mut relation = Relation::new_binary(id, "authored_by", from, to);
 
     let role_prop: PropertyName = "role".into();
     relation.set_property(role_prop.clone(), "author");
 
     assert_eq!(relation.id, id);
-    assert_eq!(relation.source, from);
-    assert_eq!(relation.target, to);
+    assert_eq!(relation.source(), Some(from));
+    assert_eq!(relation.target(), Some(to));
+    assert_eq!(relation.members.len(), 2);
     assert_eq!(relation.relation_type, "authored_by");
     assert_eq!(
         relation.get_property(&role_prop),
@@ -68,8 +69,10 @@ fn test_operations_variants() {
     let create_rel_op = Operation::CreateRelation {
         relation_id: r_id,
         relation_type: "related".to_string(),
-        source: e_id,
-        target: EntityId::new(),
+        members: vec![
+            pds::RelationMember::new(e_id, "source"),
+            pds::RelationMember::new(EntityId::new(), "target"),
+        ],
     };
     let delete_rel_op = Operation::DeleteRelation { relation_id: r_id };
     let delete_entity_op = Operation::DeleteEntity { entity_id: e_id };
