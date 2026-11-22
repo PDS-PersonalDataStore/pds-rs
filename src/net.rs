@@ -192,7 +192,7 @@ impl PdsNetworkNode {
                     let resp = {
                         let b_store = blobs.read().await;
                         match b_store.get_descriptor(&blob_id) {
-                            Some(desc) => match b_store.get_data(&blob_id) {
+                            Some(desc) => match b_store.get_raw_data(&blob_id) {
                                 Ok(data) => BlobNetResponse::Found {
                                     descriptor: desc.clone(),
                                     data,
@@ -521,13 +521,13 @@ impl PdsNetworkNode {
         Ok((session_token, applied_changes))
     }
 
-    /// Fetches a CAS blob from a peer over /pds/blob/1.0 using an agreed session token.
-    pub async fn fetch_blob(
+    /// Fetches a CAS blob with its descriptor from a peer over /pds/blob/1.0 using an agreed session token.
+    pub async fn fetch_blob_with_descriptor(
         &self,
         peer_addr: EndpointAddr,
         session_token: [u8; 32],
         blob_id: BlobId,
-    ) -> Result<Vec<u8>, NetSyncError> {
+    ) -> Result<(BlobDescriptor, Vec<u8>), NetSyncError> {
         let conn = self
             .endpoint
             .connect(peer_addr, PDS_BLOB_ALPN)
@@ -553,7 +553,7 @@ impl PdsNetworkNode {
         let resp: BlobNetResponse = serde_json::from_slice(&resp_bytes)?;
 
         match resp {
-            BlobNetResponse::Found { data, .. } => Ok(data),
+            BlobNetResponse::Found { descriptor, data } => Ok((descriptor, data)),
             BlobNetResponse::NotFound(id) => {
                 Err(NetSyncError::Protocol(format!("Blob not found: {id}")))
             }
@@ -561,6 +561,19 @@ impl PdsNetworkNode {
                 "Invalid or expired blob session token".into(),
             )),
         }
+    }
+
+    /// Fetches a CAS blob from a peer over /pds/blob/1.0 using an agreed session token.
+    pub async fn fetch_blob(
+        &self,
+        peer_addr: EndpointAddr,
+        session_token: [u8; 32],
+        blob_id: BlobId,
+    ) -> Result<Vec<u8>, NetSyncError> {
+        let (_desc, data) = self
+            .fetch_blob_with_descriptor(peer_addr, session_token, blob_id)
+            .await?;
+        Ok(data)
     }
 
     /// Sends a lightweight HeadAnnounce message to a peer over /pds/sync/1.0
