@@ -323,6 +323,7 @@ impl PdsNodeDaemon {
             IpcRequest::CreateRelation {
                 session_id,
                 relation_type,
+                mut members,
                 source,
                 target,
             } => {
@@ -335,17 +336,30 @@ impl PdsNodeDaemon {
                     }
                 }
 
+                if members.is_empty() {
+                    if let Some(src) = source {
+                        members.push(crate::relation::RelationMember::new(src, "source"));
+                    }
+                    if let Some(tgt) = target {
+                        members.push(crate::relation::RelationMember::new(tgt, "target"));
+                    }
+                }
+
+                if members.is_empty() {
+                    return Ok(IpcResponse::Error(
+                        "Relation must contain at least one member".to_string(),
+                    ));
+                }
+
                 let (parents, meta) = {
                     let storage = self.storage.read().await;
-                    if !storage.state().entities.contains_key(&source) {
-                        return Ok(IpcResponse::Error(format!(
-                            "Source entity not found: {source}"
-                        )));
-                    }
-                    if !storage.state().entities.contains_key(&target) {
-                        return Ok(IpcResponse::Error(format!(
-                            "Target entity not found: {target}"
-                        )));
+                    for m in &members {
+                        if !storage.state().entities.contains_key(&m.entity_id) {
+                            return Ok(IpcResponse::Error(format!(
+                                "Entity not found: {}",
+                                m.entity_id
+                            )));
+                        }
                     }
                     let heads: Vec<ChangeId> = storage.dag().heads().iter().copied().collect();
                     (heads, crate::change::ChangeMetadata::new("ipc-client"))
@@ -355,8 +369,7 @@ impl PdsNodeDaemon {
                 let ops = vec![Operation::CreateRelation {
                     relation_id,
                     relation_type,
-                    source,
-                    target,
+                    members,
                 }];
 
                 let change = crate::change::Change::new(ChangeId::new(), parents, meta, ops);

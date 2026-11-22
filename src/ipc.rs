@@ -4,7 +4,7 @@ use crate::change::Change;
 use crate::entity::Entity;
 use crate::id::{BlobId, ChangeId, EntityId, KeyId, RelationId};
 use crate::operation::Operation;
-use crate::relation::Relation;
+use crate::relation::{Relation, RelationMember};
 use crate::security::Permission;
 use crate::storage::DiskStorage;
 use crate::value::{PropertyName, PropertyValue};
@@ -44,8 +44,12 @@ pub enum IpcRequest {
     CreateRelation {
         session_id: String,
         relation_type: String,
-        source: EntityId,
-        target: EntityId,
+        #[serde(default)]
+        members: Vec<RelationMember>,
+        #[serde(default)]
+        source: Option<EntityId>,
+        #[serde(default)]
+        target: Option<EntityId>,
     },
     UpdateRelation {
         session_id: String,
@@ -458,6 +462,7 @@ impl<'a> IpcServerHandler<'a> {
             IpcRequest::CreateRelation {
                 session_id,
                 relation_type,
+                mut members,
                 source,
                 target,
             } => {
@@ -468,12 +473,26 @@ impl<'a> IpcServerHandler<'a> {
                     return IpcResponse::Error(err.to_string());
                 }
 
+                if members.is_empty() {
+                    if let Some(src) = source {
+                        members.push(RelationMember::new(src, "source"));
+                    }
+                    if let Some(tgt) = target {
+                        members.push(RelationMember::new(tgt, "target"));
+                    }
+                }
+
+                if members.is_empty() {
+                    return IpcResponse::Error(
+                        "Relation must contain at least one member".to_string(),
+                    );
+                }
+
                 let relation_id = RelationId::new();
                 let ops = vec![Operation::CreateRelation {
                     relation_id,
                     relation_type,
-                    source,
-                    target,
+                    members,
                 }];
 
                 let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
@@ -812,6 +831,8 @@ pub enum IpcClientError {
     NoActiveSession,
     #[error("Server returned error: {0}")]
     ServerError(String),
+    #[error("Relation error: {0}")]
+    Relation(#[from] crate::relation::RelationError),
     #[error("Unexpected server response")]
     UnexpectedResponse,
 }
@@ -939,10 +960,34 @@ impl PdsIpcClient {
         source: EntityId,
         target: EntityId,
     ) -> Result<IpcRequest, IpcClientError> {
+        let members = vec![
+            RelationMember::new(source, "source"),
+            RelationMember::new(target, "target"),
+        ];
+        self.create_multimember_relation_request(relation_type, members)
+    }
+
+    pub fn create_multimember_relation_request(
+        &self,
+        relation_type: String,
+        members: Vec<RelationMember>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        if members.is_empty() {
+            return Err(crate::relation::RelationError::EmptyMembers.into());
+        }
         let session_id = self.require_session()?.to_string();
+        let source = members
+            .iter()
+            .find(|m| m.role == "source")
+            .map(|m| m.entity_id);
+        let target = members
+            .iter()
+            .find(|m| m.role == "target")
+            .map(|m| m.entity_id);
         Ok(IpcRequest::CreateRelation {
             session_id,
             relation_type,
+            members,
             source,
             target,
         })
