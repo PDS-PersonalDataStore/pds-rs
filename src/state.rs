@@ -48,17 +48,16 @@ impl DatasetState {
             }
             Operation::DeleteEntity { entity_id } => {
                 self.entities.remove(entity_id);
-                self.relations
-                    .retain(|_, rel| rel.source != *entity_id && rel.target != *entity_id);
+                self.relations.retain(|_, rel| !rel.has_member(entity_id));
             }
             Operation::CreateRelation {
                 relation_id,
                 relation_type,
-                source,
-                target,
+                members,
             } => {
-                let relation = Relation::new(*relation_id, relation_type, *source, *target);
-                self.relations.insert(*relation_id, relation);
+                if let Ok(relation) = Relation::new(*relation_id, relation_type, members.clone()) {
+                    self.relations.insert(*relation_id, relation);
+                }
             }
             Operation::SetRelationProperty {
                 relation_id,
