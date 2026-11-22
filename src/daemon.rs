@@ -42,6 +42,7 @@ pub struct PdsNodeDaemon {
     authenticator: Arc<RwLock<ClientAuthenticator>>,
     trust: Arc<RwLock<TrustManager>>,
     blobs: Arc<RwLock<BlobStore>>,
+    keystore: Arc<RwLock<crate::crypto::KeyStore>>,
     signing_key: SigningKey,
     net_node: PdsNetworkNode,
     shared_dag: Arc<RwLock<HistoryDag>>,
@@ -77,10 +78,16 @@ impl PdsNodeDaemon {
             authenticator: Arc::new(RwLock::new(ClientAuthenticator::new(node_name))),
             trust,
             blobs,
+            keystore: Arc::new(RwLock::new(crate::crypto::KeyStore::new())),
             signing_key,
             net_node,
             shared_dag,
         })
+    }
+
+    /// Returns a shared reference to the node KeyStore.
+    pub fn keystore(&self) -> Arc<RwLock<crate::crypto::KeyStore>> {
+        self.keystore.clone()
     }
 
     /// Returns the Iroh EndpointId of this node.
@@ -106,6 +113,11 @@ impl PdsNodeDaemon {
     /// Returns a shared reference to the SqliteStorage.
     pub fn storage(&self) -> Arc<RwLock<SqliteStorage>> {
         self.storage.clone()
+    }
+
+    /// Returns a shared reference to the BlobStore.
+    pub fn blobs(&self) -> Arc<RwLock<BlobStore>> {
+        self.blobs.clone()
     }
 
     /// Returns a shared reference to the IpcSessionManager.
@@ -454,11 +466,30 @@ impl PdsNodeDaemon {
                 if let Err(err) = sessions.check_permission(&session_id, &Permission::ReadBlobs) {
                     return Ok(IpcResponse::Error(err.to_string()));
                 }
-                let storage = self.storage.read().await;
-                match storage.blobs().get_data(&blob_id) {
+                let blobs = self.blobs.read().await;
+                match blobs.get_data(&blob_id) {
                     Ok(data) => Ok(IpcResponse::Blob(data)),
+                    Err(crate::blob::BlobError::EncryptedBlobRequiresKeystore) => {
+                        let keystore = self.keystore.read().await;
+                        match blobs.get_decrypted_data(&blob_id, &keystore) {
+                            Ok(data) => Ok(IpcResponse::Blob(data)),
+                            Err(err) => Ok(IpcResponse::Error(err.to_string())),
+                        }
+                    }
                     Err(err) => Ok(IpcResponse::Error(err.to_string())),
                 }
+            }
+            IpcRequest::GetBlobDescriptor {
+                session_id,
+                blob_id,
+            } => {
+                let sessions = self.sessions.read().await;
+                if let Err(err) = sessions.check_permission(&session_id, &Permission::ReadBlobs) {
+                    return Ok(IpcResponse::Error(err.to_string()));
+                }
+                let blobs = self.blobs.read().await;
+                let desc = blobs.get_descriptor(&blob_id).cloned();
+                Ok(IpcResponse::BlobDescriptor(desc))
             }
             IpcRequest::PutBlob {
                 session_id,
@@ -474,8 +505,39 @@ impl PdsNodeDaemon {
                     }
                 }
                 let blob_id = BlobId::new();
-                let mut storage = self.storage.write().await;
-                match storage.blobs_mut().put(blob_id, &data, media_type) {
+                let mut blobs = self.blobs.write().await;
+                match blobs.put(blob_id, &data, media_type) {
+                    Ok(descriptor) => {
+                        let mut sessions = self.sessions.write().await;
+                        sessions.publish_notification(
+                            EventTopic::BlobCreated,
+                            IpcNotification::BlobAppended {
+                                descriptor: descriptor.clone(),
+                            },
+                        );
+                        Ok(IpcResponse::BlobCreated(descriptor))
+                    }
+                    Err(err) => Ok(IpcResponse::Error(err.to_string())),
+                }
+            }
+            IpcRequest::PutEncryptedBlob {
+                session_id,
+                plaintext,
+                key_id,
+                media_type,
+            } => {
+                {
+                    let sessions = self.sessions.read().await;
+                    if let Err(err) =
+                        sessions.check_permission(&session_id, &Permission::WriteBlobs)
+                    {
+                        return Ok(IpcResponse::Error(err.to_string()));
+                    }
+                }
+                let blob_id = BlobId::new();
+                let keystore = self.keystore.read().await;
+                let mut blobs = self.blobs.write().await;
+                match blobs.put_encrypted(blob_id, &plaintext, key_id, &keystore, media_type) {
                     Ok(descriptor) => {
                         let mut sessions = self.sessions.write().await;
                         sessions.publish_notification(
@@ -713,41 +775,39 @@ impl PdsNodeDaemon {
         for change in changes {
             for op in &change.operations {
                 match op {
-                    Operation::SetEntityProperty { name, value, .. } => {
-                        let is_blob_ref = name.name.contains("blob")
-                            || name.name.contains("receipt")
-                            || name.name.contains("backed_by");
-                        if is_blob_ref {
-                            match value {
-                                PropertyValue::BlobRef(blob_id) => {
-                                    candidate_blobs.insert(*blob_id);
-                                }
-                                PropertyValue::Text(s) => {
-                                    if let Ok(blob_id) = s.parse::<BlobId>() {
-                                        candidate_blobs.insert(blob_id);
-                                    }
-                                }
-                                _ => {}
+                    Operation::SetEntityProperty { name, value, .. } => match value {
+                        PropertyValue::BlobRef(blob_id) => {
+                            candidate_blobs.insert(*blob_id);
+                        }
+                        PropertyValue::Text(s) => {
+                            if (name.name.contains("blob")
+                                || name.name.contains("receipt")
+                                || name.name.contains("backed_by")
+                                || name.name.contains("attachment")
+                                || name.name.contains("file"))
+                                && let Ok(blob_id) = s.parse::<BlobId>()
+                            {
+                                candidate_blobs.insert(blob_id);
                             }
                         }
-                    }
-                    Operation::SetRelationProperty { name, value, .. } => {
-                        let is_blob_ref =
-                            name.name.contains("blob") || name.name.contains("backed_by");
-                        if is_blob_ref {
-                            match value {
-                                PropertyValue::BlobRef(blob_id) => {
-                                    candidate_blobs.insert(*blob_id);
-                                }
-                                PropertyValue::Text(s) => {
-                                    if let Ok(blob_id) = s.parse::<BlobId>() {
-                                        candidate_blobs.insert(blob_id);
-                                    }
-                                }
-                                _ => {}
+                        _ => {}
+                    },
+                    Operation::SetRelationProperty { name, value, .. } => match value {
+                        PropertyValue::BlobRef(blob_id) => {
+                            candidate_blobs.insert(*blob_id);
+                        }
+                        PropertyValue::Text(s) => {
+                            if (name.name.contains("blob")
+                                || name.name.contains("backed_by")
+                                || name.name.contains("attachment")
+                                || name.name.contains("file"))
+                                && let Ok(blob_id) = s.parse::<BlobId>()
+                            {
+                                candidate_blobs.insert(blob_id);
                             }
                         }
-                    }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -759,13 +819,13 @@ impl PdsNodeDaemon {
                 blobs.get_descriptor(&blob_id).is_some()
             };
             if !already_has
-                && let Ok(bytes) = self
+                && let Ok((descriptor, bytes)) = self
                     .net_node
-                    .fetch_blob(peer_addr.clone(), session_token, blob_id)
+                    .fetch_blob_with_descriptor(peer_addr.clone(), session_token, blob_id)
                     .await
             {
                 let mut blobs = self.blobs.write().await;
-                let _ = blobs.put(blob_id, &bytes, None);
+                let _ = blobs.put_descriptor_and_data(descriptor, &bytes);
             }
         }
     }
@@ -1267,5 +1327,216 @@ mod tests {
         })
         .await
         .expect("test_background_sync_and_blob_rule_replication timed out after 59s");
+    }
+
+    #[tokio::test]
+    async fn test_daemon_encrypted_blob_ipc_and_sync() {
+        tokio::time::timeout(std::time::Duration::from_secs(59), async {
+            let dir1 =
+                std::env::temp_dir().join(format!("pds_daemon_enc_1_{}", ulid::Ulid::generate()));
+            let dir2 =
+                std::env::temp_dir().join(format!("pds_daemon_enc_2_{}", ulid::Ulid::generate()));
+
+            let daemon1 = Arc::new(PdsNodeDaemon::init(&dir1, "daemon-enc-1").await.unwrap());
+            let daemon2 = Arc::new(PdsNodeDaemon::init(&dir2, "daemon-enc-2").await.unwrap());
+
+            // Set up mutual trust pairing
+            let pin = "654321";
+            let pin_hash = TrustManager::compute_pin_hash(
+                &daemon2.signing_key().verifying_key().to_bytes(),
+                pin,
+            );
+            let t1_arc = daemon1.trust();
+            let (_trusted_n2, auth_event) = {
+                let mut t1 = t1_arc.write().await;
+                t1.complete_pairing(
+                    "daemon-enc-2".into(),
+                    "Daemon Enc 2".into(),
+                    daemon2.signing_key().verifying_key().to_bytes(),
+                    pin,
+                    pin_hash,
+                )
+                .unwrap()
+            };
+
+            {
+                let t2_arc = daemon2.trust();
+                let mut t2 = t2_arc.write().await;
+                let t1 = t1_arc.read().await;
+                t2.register_trusted_node(t1.get_node("daemon-enc-1").unwrap().clone());
+                t2.apply_authorization(auth_event).unwrap();
+            }
+
+            let d2_addr_json = serde_json::to_string(&daemon2.addr()).unwrap();
+            {
+                let st1 = daemon1.storage();
+                let storage1 = st1.read().await;
+                storage1
+                    .save_peer_routing("daemon-enc-2", &d2_addr_json, chrono::Utc::now())
+                    .unwrap();
+            }
+
+            let d1_addr_json = serde_json::to_string(&daemon1.addr()).unwrap();
+            {
+                let st2 = daemon2.storage();
+                let storage2 = st2.read().await;
+                storage2
+                    .save_peer_routing("daemon-enc-1", &d1_addr_json, chrono::Utc::now())
+                    .unwrap();
+            }
+
+            // Daemon 2 sync rule: replicates blobs for medical_scan entities
+            {
+                let st2 = daemon2.storage();
+                let storage2 = st2.read().await;
+                let rule = crate::storage::BlobSyncRule {
+                    id: "medical-rule".into(),
+                    app_id: None,
+                    entity_type: Some("medical_scan".into()),
+                    relation_type: None,
+                    max_size_bytes: Some(10 * 1024 * 1024),
+                    created_at: chrono::Utc::now(),
+                };
+                storage2.save_blob_sync_rule(&rule).unwrap();
+            }
+
+            // Key setup: shared symmetric encryption key between clients/authorized nodes
+            let (key_id, key_bytes) = {
+                let mut ks1 = daemon1.keystore.write().await;
+                ks1.generate_key()
+            };
+            {
+                let mut ks2 = daemon2.keystore.write().await;
+                ks2.insert_key(key_id, key_bytes);
+            }
+
+            // Register client on daemon1
+            let client_key = SigningKey::from_bytes(&[88u8; 32]);
+            let client_id = {
+                let auth_arc = daemon1.authenticator();
+                let mut auth = auth_arc.write().await;
+                let id = auth.register_client("MedicalApp", client_key.verifying_key().to_bytes());
+                let mut perms = BTreeSet::new();
+                perms.insert(Permission::WriteEntities);
+                perms.insert(Permission::ReadBlobs);
+                perms.insert(Permission::WriteBlobs);
+                auth.approve_client(&id, perms);
+                id
+            };
+
+            let mut client = PdsIpcClient::new(client_id, client_key);
+            let hello = client.start_handshake(vec!["1.0.0".into()]);
+            let resp = daemon1.handle_ipc_request(hello, None).await.unwrap();
+            let challenge = match resp {
+                IpcResponse::Challenge(c) => c,
+                other => panic!("Expected challenge, got {:?}", other),
+            };
+            let auth_req = client.handle_challenge(&challenge);
+            let resp = daemon1.handle_ipc_request(auth_req, None).await.unwrap();
+            match resp {
+                IpcResponse::Authenticated(success) => client.handle_auth_success(&success),
+                other => panic!("Expected authenticated, got {:?}", other),
+            };
+
+            // Store encrypted blob via IPC
+            let secret_scan = b"High-resolution CT Scan binary byte slice";
+            let put_enc_req = client
+                .put_encrypted_blob_request(
+                    secret_scan.to_vec(),
+                    key_id,
+                    Some("application/dicom".into()),
+                )
+                .unwrap();
+            let resp = daemon1.handle_ipc_request(put_enc_req, None).await.unwrap();
+            let desc = match resp {
+                IpcResponse::BlobCreated(d) => d,
+                other => panic!("Expected BlobCreated, got {:?}", other),
+            };
+            let blob_id = desc.id;
+
+            // Verify raw on disk is encrypted
+            let raw_on_daemon1 = {
+                let b1 = daemon1.blobs.read().await;
+                b1.get_raw_data(&blob_id).unwrap()
+            };
+            assert_ne!(raw_on_daemon1, secret_scan);
+
+            // Verify GetBlob via IPC returns decrypted data
+            let get_blob_req = client.get_blob_request(blob_id).unwrap();
+            let get_resp = daemon1
+                .handle_ipc_request(get_blob_req, None)
+                .await
+                .unwrap();
+            match get_resp {
+                IpcResponse::Blob(data) => assert_eq!(data, secret_scan),
+                other => panic!("Expected Blob, got {:?}", other),
+            }
+
+            // Start background sync on both daemons before creating entity so reactive broadcast works
+            let (shutdown_tx1, shutdown_rx1) = tokio::sync::watch::channel(false);
+            let bg_handle1 = daemon1.clone().start_background_sync(1, shutdown_rx1);
+
+            let (shutdown_tx2, shutdown_rx2) = tokio::sync::watch::channel(false);
+            let bg_handle2 = daemon2.clone().start_background_sync(1, shutdown_rx2);
+
+            // Create entity referencing encrypted blob
+            let prop_name = PropertyName::new("scan_attachment");
+            let create_req = client
+                .create_entity_request(
+                    Some("medical_scan".into()),
+                    vec![(prop_name, PropertyValue::BlobRef(blob_id))],
+                )
+                .unwrap();
+            let resp = daemon1.handle_ipc_request(create_req, None).await.unwrap();
+            let entity_id = match resp {
+                IpcResponse::EntityCreated(id) => id,
+                other => panic!("Expected EntityCreated, got {:?}", other),
+            };
+
+            let mut synced = false;
+            for _ in 0..20 {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                let st2 = daemon2.storage();
+                let storage2 = st2.read().await;
+                let has_entity = storage2.state().entities.contains_key(&entity_id);
+                let b2 = daemon2.blobs.read().await;
+                let has_blob = b2.get_descriptor(&blob_id).is_some();
+                if has_entity && has_blob {
+                    synced = true;
+                    break;
+                }
+            }
+
+            assert!(
+                synced,
+                "Daemon 2 must sync change and encrypted blob in background"
+            );
+
+            // On Daemon2, verify the replicated blob is still encrypted on disk with same ciphertext
+            let raw_on_daemon2 = {
+                let b2 = daemon2.blobs.read().await;
+                b2.get_raw_data(&blob_id).unwrap()
+            };
+            assert_eq!(raw_on_daemon2, raw_on_daemon1);
+
+            // And daemon2 can decrypt with its keystore
+            {
+                let b2 = daemon2.blobs.read().await;
+                let ks2 = daemon2.keystore.read().await;
+                let decrypted = b2.get_decrypted_data(&blob_id, &ks2).unwrap();
+                assert_eq!(decrypted, secret_scan);
+            }
+
+            // Clean shutdown
+            let _ = shutdown_tx1.send(true);
+            let _ = shutdown_tx2.send(true);
+            let _ = bg_handle1.await;
+            let _ = bg_handle2.await;
+
+            let _ = std::fs::remove_dir_all(&dir1);
+            let _ = std::fs::remove_dir_all(&dir2);
+        })
+        .await
+        .expect("test_daemon_encrypted_blob_ipc_and_sync timed out after 59s");
     }
 }
