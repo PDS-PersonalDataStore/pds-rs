@@ -29,7 +29,7 @@ pub use auth::{
     ClientAuthenticator, ClientHello, ClientId, ClientRecord, ClientStatus,
     DEFAULT_SUPPORTED_API_VERSIONS, create_client_auth_signature,
 };
-pub use blob::{BlobDescriptor, BlobError, BlobStore};
+pub use blob::{BlobDescriptor, BlobEncryption, BlobError, BlobStore};
 pub use change::{Change, ChangeMetadata, EncryptionMode};
 pub use client::{ClientError, PdsClient};
 pub use codec::{BinaryCodec, CodecError, PDS_MAGIC_HEADER};
