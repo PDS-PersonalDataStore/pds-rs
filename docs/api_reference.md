@@ -149,7 +149,7 @@ for notif in pending_notifs {
 - `UpdateEntity { session_id, entity_id, set_properties, remove_properties }`: Modyfikacja atrybutów encji.
 - `DeleteEntity { session_id, entity_id }`: Usunięcie encji (z kaskadowym usunięciem jej relacji).
 - `GetRelation { session_id, relation_id }`: Pobranie relacji.
-- `CreateRelation { session_id, relation_type, source, target }`: Połączenie encji relacją.
+- `CreateRelation { session_id, relation_type, members, source, target }`: Utworzenie relacji wielostronnej z rolami (lub binarnej `source`/`target`).
 - `UpdateRelation { session_id, relation_id, set_properties, remove_properties }`: Modyfikacja atrybutów relacji.
 - `DeleteRelation { session_id, relation_id }`: Usunięcie relacji.
 - `GetBlob { session_id, blob_id }`: Pobranie zawartości binarnej z CAS.
@@ -237,6 +237,11 @@ Moduł `daemon` udostępnia strukturę [`PdsNodeDaemon`](file:///home/tau2c/Proj
 - Magazyn obiektów binarnych [`BlobStore`](file:///home/tau2c/Projects/PDS/src/blob.rs),
 - P2P transport Iroh [`PdsNetworkNode`](file:///home/tau2c/Projects/PDS/src/net.rs).
 
+### 8.1. Zadania w Tle i Replikacja (Background Sync)
+- **`start_background_sync(heartbeat_secs, shutdown_rx)`**: Uruchamia asynchroniczną pętlę nasłuchiwania połączeń QUIC oraz cykliczny heartbeat sprawdzający stan historii u znanych peerów (`peer_routing`).
+- **`broadcast_change_to_peers()`**: Po zatwierdzeniu nowej zmiany rozsyła ogłoszenie nagłówków (`HeadAnnounce`) do sparowanych peerów w celu natychmiastowej synchronizacji.
+- **Replikacja obiektów CAS (`BlobSyncRule`)**: Automatycznie pobiera obiekty binarne referencjonowane przez zsynchronizowane encje i relacje zgodnie z zapisanymi regułami pobierania (np. według typu encji, typu relacji i limitu rozmiaru).
+
 ---
 
 ## 9. Device Trust & Revocation (`trust` module)
@@ -245,5 +250,16 @@ Moduł `trust` odpowiada za zarządzanie tożsamościami i zaufaniem węzłów w
 - **Parowanie urządzeń (QR + PIN)**: Generowanie 6-cyfrowego kodu PIN i weryfikacja SAS hash `SHA256(peer_public_key || PIN)` w celu zapobiegania atakom typu MITM.
 - **Pre-generowane jednorazowe sekrety odwołania (`revocation_secret`)**: Podczas parowania węzeł autoryzujący tworzy losowy 32-bajtowy sekret odwołania i publikuje skrót `revocation_hash = SHA256(revocation_secret)`. Sekret jest przechowywany lokalnie i nie jest przekazywany parowanemu urządzeniu.
 - **Odwołanie węzła (`revoke_node`)**: Ujawnienie sekretu trwale i nieodwracalnie unieważnia zaufanie do węzła w całej sieci.
+
+---
+
+## 10. Peer Routing & Blob Sync Rules (`storage` module)
+
+Tabela `peer_routing` oraz `blob_sync_rules` w [`SqliteStorage`](file:///home/tau2c/Projects/PDS/src/storage.rs):
+- **`save_peer_routing(node_id, endpoint_addr_json, last_seen)`**: Zapisuje lub aktualizuje adres sieciowy punktu końcowego peera dla mechanizmu routingu.
+- **`load_all_peer_routing()`**: Zwraca listę wszystkich zarejestrowanych rekordów routingu peerów.
+- **`save_blob_sync_rule(rule)`**: Konfiguruje regułę selektywnej replikacji obiektów CAS (`BlobSyncRule`).
+- **`load_blob_sync_rules()`**: Wczytuje aktywne reguły pobierania blobów.
+- **`delete_blob_sync_rule(rule_id)`**: Usuwa wybraną regułę replikacji blobów.
 
 

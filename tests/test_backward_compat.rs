@@ -183,3 +183,63 @@ fn test_change_with_unknown_operation_projection_and_reserialization() {
     let re_decoded: Change = serde_json::from_str(&reserialized).unwrap();
     assert_eq!(change, re_decoded);
 }
+
+/// A legacy v1.0.0 Change containing a CreateRelation operation with source and target
+/// must deserialize into multimember members with "source" and "target" roles.
+#[test]
+fn test_legacy_create_relation_operation_backward_compat() {
+    let e1 = pds::EntityId::new();
+    let e2 = pds::EntityId::new();
+    let rel_id = pds::RelationId::new();
+
+    let legacy_json = serde_json::json!({
+        "id": pds::ChangeId::new(),
+        "parents": [],
+        "metadata": {
+            "author_id": "legacy-author",
+            "device_id": "legacy-device",
+            "timestamp": "2026-11-01T10:00:00Z",
+            "message": "legacy relation change"
+        },
+        "operations": [
+            {
+                "action": "CreateRelation",
+                "payload": {
+                    "relation_id": rel_id,
+                    "relation_type": "member_of",
+                    "source": e1,
+                    "target": e2
+                }
+            }
+        ]
+    })
+    .to_string();
+
+    let change: Change = serde_json::from_str(&legacy_json).unwrap();
+    assert_eq!(change.operations.len(), 1);
+    match &change.operations[0] {
+        pds::Operation::CreateRelation {
+            relation_id,
+            relation_type,
+            members,
+        } => {
+            assert_eq!(*relation_id, rel_id);
+            assert_eq!(relation_type, "member_of");
+            assert_eq!(members.len(), 2);
+            assert_eq!(members[0].entity_id, e1);
+            assert_eq!(members[0].role, "source");
+            assert_eq!(members[1].entity_id, e2);
+            assert_eq!(members[1].role, "target");
+        }
+        other => panic!("Expected Operation::CreateRelation, got {:?}", other),
+    }
+
+    // Materialize state and verify relation
+    let mut state = pds::DatasetState::new();
+    state.apply_change(&change);
+    let rel = state.relations.get(&rel_id).unwrap();
+    assert_eq!(rel.source(), Some(e1));
+    assert_eq!(rel.target(), Some(e2));
+    assert!(rel.has_member(&e1));
+    assert!(rel.has_member(&e2));
+}

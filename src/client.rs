@@ -14,6 +14,8 @@ pub enum ClientError {
     Security(#[from] SecurityError),
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
+    #[error("Relation error: {0}")]
+    Relation(#[from] crate::relation::RelationError),
     #[error("Entity not found: {0}")]
     EntityNotFound(EntityId),
     #[error("Relation not found: {0}")]
@@ -90,6 +92,22 @@ impl<'a> PdsClient<'a> {
         source: EntityId,
         target: EntityId,
     ) -> Result<RelationId, ClientError> {
+        let members = vec![
+            crate::relation::RelationMember::new(source, "source"),
+            crate::relation::RelationMember::new(target, "target"),
+        ];
+        self.create_multimember_relation(relation_type, members)
+    }
+
+    pub fn create_multimember_relation(
+        &mut self,
+        relation_type: impl Into<String>,
+        members: Vec<crate::relation::RelationMember>,
+    ) -> Result<RelationId, ClientError> {
+        if members.is_empty() {
+            return Err(crate::relation::RelationError::EmptyMembers.into());
+        }
+
         self.security
             .check_permission(&self.app_id, &Permission::WriteEntities)?;
 
@@ -97,8 +115,7 @@ impl<'a> PdsClient<'a> {
         let ops = vec![Operation::CreateRelation {
             relation_id,
             relation_type: relation_type.into(),
-            source,
-            target,
+            members,
         }];
 
         let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();

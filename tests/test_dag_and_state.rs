@@ -100,8 +100,10 @@ fn test_dataset_state_projection_lifecycle() {
             Operation::CreateRelation {
                 relation_id: rel_id,
                 relation_type: "paired_to".to_string(),
-                source: entity_id,
-                target: target_id,
+                members: vec![
+                    pds::RelationMember::new(entity_id, "source"),
+                    pds::RelationMember::new(target_id, "target"),
+                ],
             },
         ],
     );

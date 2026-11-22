@@ -2,9 +2,9 @@ use crate::auth::{AuthChallenge, AuthSuccess, ClientAuth, ClientHello};
 use crate::blob::BlobDescriptor;
 use crate::change::Change;
 use crate::entity::Entity;
-use crate::id::{BlobId, ChangeId, EntityId, RelationId};
+use crate::id::{BlobId, ChangeId, EntityId, KeyId, RelationId};
 use crate::operation::Operation;
-use crate::relation::Relation;
+use crate::relation::{Relation, RelationMember};
 use crate::security::Permission;
 use crate::storage::DiskStorage;
 use crate::value::{PropertyName, PropertyValue};
@@ -44,8 +44,12 @@ pub enum IpcRequest {
     CreateRelation {
         session_id: String,
         relation_type: String,
-        source: EntityId,
-        target: EntityId,
+        #[serde(default)]
+        members: Vec<RelationMember>,
+        #[serde(default)]
+        source: Option<EntityId>,
+        #[serde(default)]
+        target: Option<EntityId>,
     },
     UpdateRelation {
         session_id: String,
@@ -61,9 +65,19 @@ pub enum IpcRequest {
         session_id: String,
         blob_id: BlobId,
     },
+    GetBlobDescriptor {
+        session_id: String,
+        blob_id: BlobId,
+    },
     PutBlob {
         session_id: String,
         data: Vec<u8>,
+        media_type: Option<String>,
+    },
+    PutEncryptedBlob {
+        session_id: String,
+        plaintext: Vec<u8>,
+        key_id: KeyId,
         media_type: Option<String>,
     },
     PollChanges {
@@ -124,6 +138,7 @@ pub enum IpcResponse {
     RelationUpdated(RelationId),
     RelationDeleted(RelationId),
     Blob(Vec<u8>),
+    BlobDescriptor(Option<BlobDescriptor>),
     BlobCreated(BlobDescriptor),
     Changes {
         changes: Vec<Change>,
@@ -447,6 +462,7 @@ impl<'a> IpcServerHandler<'a> {
             IpcRequest::CreateRelation {
                 session_id,
                 relation_type,
+                mut members,
                 source,
                 target,
             } => {
@@ -457,12 +473,26 @@ impl<'a> IpcServerHandler<'a> {
                     return IpcResponse::Error(err.to_string());
                 }
 
+                if members.is_empty() {
+                    if let Some(src) = source {
+                        members.push(RelationMember::new(src, "source"));
+                    }
+                    if let Some(tgt) = target {
+                        members.push(RelationMember::new(tgt, "target"));
+                    }
+                }
+
+                if members.is_empty() {
+                    return IpcResponse::Error(
+                        "Relation must contain at least one member".to_string(),
+                    );
+                }
+
                 let relation_id = RelationId::new();
                 let ops = vec![Operation::CreateRelation {
                     relation_id,
                     relation_type,
-                    source,
-                    target,
+                    members,
                 }];
 
                 let parents: Vec<ChangeId> = self.storage.dag().heads().iter().copied().collect();
@@ -576,6 +606,19 @@ impl<'a> IpcServerHandler<'a> {
                     Err(err) => IpcResponse::Error(err.to_string()),
                 }
             }
+            IpcRequest::GetBlobDescriptor {
+                session_id,
+                blob_id,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::ReadBlobs)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                let desc = self.storage.blobs().get_descriptor(&blob_id).cloned();
+                IpcResponse::BlobDescriptor(desc)
+            }
             IpcRequest::PutBlob {
                 session_id,
                 data,
@@ -600,6 +643,22 @@ impl<'a> IpcServerHandler<'a> {
                     }
                     Err(err) => IpcResponse::Error(err.to_string()),
                 }
+            }
+            IpcRequest::PutEncryptedBlob {
+                session_id,
+                plaintext: _,
+                key_id: _,
+                media_type: _,
+            } => {
+                if let Err(err) = self
+                    .sessions
+                    .check_permission(&session_id, &Permission::WriteBlobs)
+                {
+                    return IpcResponse::Error(err.to_string());
+                }
+                IpcResponse::Error(
+                    "Encrypted blob storage via standalone handler requires keystore".into(),
+                )
             }
             IpcRequest::PollChanges {
                 session_id,
@@ -772,6 +831,8 @@ pub enum IpcClientError {
     NoActiveSession,
     #[error("Server returned error: {0}")]
     ServerError(String),
+    #[error("Relation error: {0}")]
+    Relation(#[from] crate::relation::RelationError),
     #[error("Unexpected server response")]
     UnexpectedResponse,
 }
@@ -899,10 +960,34 @@ impl PdsIpcClient {
         source: EntityId,
         target: EntityId,
     ) -> Result<IpcRequest, IpcClientError> {
+        let members = vec![
+            RelationMember::new(source, "source"),
+            RelationMember::new(target, "target"),
+        ];
+        self.create_multimember_relation_request(relation_type, members)
+    }
+
+    pub fn create_multimember_relation_request(
+        &self,
+        relation_type: String,
+        members: Vec<RelationMember>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        if members.is_empty() {
+            return Err(crate::relation::RelationError::EmptyMembers.into());
+        }
         let session_id = self.require_session()?.to_string();
+        let source = members
+            .iter()
+            .find(|m| m.role == "source")
+            .map(|m| m.entity_id);
+        let target = members
+            .iter()
+            .find(|m| m.role == "target")
+            .map(|m| m.entity_id);
         Ok(IpcRequest::CreateRelation {
             session_id,
             relation_type,
+            members,
             source,
             target,
         })
@@ -942,6 +1027,17 @@ impl PdsIpcClient {
         })
     }
 
+    pub fn get_blob_descriptor_request(
+        &self,
+        blob_id: BlobId,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::GetBlobDescriptor {
+            session_id,
+            blob_id,
+        })
+    }
+
     pub fn put_blob_request(
         &self,
         data: Vec<u8>,
@@ -951,6 +1047,21 @@ impl PdsIpcClient {
         Ok(IpcRequest::PutBlob {
             session_id,
             data,
+            media_type,
+        })
+    }
+
+    pub fn put_encrypted_blob_request(
+        &self,
+        plaintext: Vec<u8>,
+        key_id: KeyId,
+        media_type: Option<String>,
+    ) -> Result<IpcRequest, IpcClientError> {
+        let session_id = self.require_session()?.to_string();
+        Ok(IpcRequest::PutEncryptedBlob {
+            session_id,
+            plaintext,
+            key_id,
             media_type,
         })
     }
