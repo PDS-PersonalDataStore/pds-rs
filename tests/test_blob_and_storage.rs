@@ -195,3 +195,58 @@ fn test_sqlite_encrypted_blob_storage_and_recovery() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn test_fastcdc_chunked_blob_storage_and_recovery() {
+    let root = std::env::temp_dir().join(format!("pds_test_chunked_blob_{}", BlobId::new()));
+    let blob_id = BlobId::new();
+    let mut keystore = pds::KeyStore::new();
+    let (key_id, _) = keystore.generate_key();
+
+    // 1.25 MiB payload to exceed CHUNKING_THRESHOLD_BYTES
+    let size = 1280 * 1024;
+    let mut large_secret = Vec::with_capacity(size);
+    for i in 0..size {
+        large_secret.push(((i * 7) % 256) as u8);
+    }
+
+    {
+        let mut storage = pds::SqliteStorage::open(&root).expect("Failed to open sqlite storage");
+        let desc = storage
+            .blobs_mut()
+            .put_encrypted(
+                blob_id,
+                &large_secret,
+                key_id,
+                &keystore,
+                Some("application/octet-stream".into()),
+            )
+            .expect("Failed to put chunked encrypted blob");
+
+        assert!(desc.chunks.is_some());
+        assert!(desc.chunks.unwrap().len() > 1);
+    }
+
+    {
+        let storage = pds::SqliteStorage::open(&root).expect("Failed to reopen sqlite storage");
+        let desc = storage
+            .blobs()
+            .get_descriptor(&blob_id)
+            .expect("Descriptor not found");
+
+        assert!(desc.chunks.is_some());
+        let raw = storage
+            .blobs()
+            .get_raw_data(&blob_id)
+            .expect("Failed to get raw");
+        assert_ne!(raw, large_secret);
+
+        let decrypted = storage
+            .blobs()
+            .get_decrypted_data(&blob_id, &keystore)
+            .expect("Failed to decrypt chunked blob");
+        assert_eq!(decrypted, large_secret);
+    }
+
+    let _ = fs::remove_dir_all(&root);
+}
