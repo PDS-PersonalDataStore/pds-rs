@@ -46,7 +46,7 @@ pub use ipc::{
     EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
     IpcSessionManager, PdsIpcClient, Session,
 };
-pub use logging::{LoggingConfig, LoggingError, LoggingManager};
+pub use logging::{LoggingError, LoggingManager};
 pub use net::{
     BlobNetRequest, BlobNetResponse, NetAuthMessage, NetSyncError, PDS_ALPN, PDS_BLOB_ALPN,
     PDS_SYNC_ALPN, PdsNetworkNode,
