@@ -16,6 +16,8 @@ pub enum ClientError {
     Storage(#[from] StorageError),
     #[error("Relation error: {0}")]
     Relation(#[from] crate::relation::RelationError),
+    #[error("Blob error: {0}")]
+    Blob(#[from] crate::blob::BlobError),
     #[error("Entity not found: {0}")]
     EntityNotFound(EntityId),
     #[error("Relation not found: {0}")]
@@ -125,6 +127,73 @@ impl<'a> PdsClient<'a> {
         self.storage.append_change(change)?;
         Ok(relation_id)
     }
+
+    pub fn put_blob(
+        &mut self,
+        data: &[u8],
+        mime_type: Option<String>,
+    ) -> Result<crate::blob::BlobDescriptor, ClientError> {
+        self.security
+            .check_permission(&self.app_id, &Permission::WriteBlobs)?;
+        let blob_id = crate::id::BlobId::new();
+        let descriptor = self.storage.blobs_mut().put(blob_id, data, mime_type)?;
+        Ok(descriptor)
+    }
+
+    pub fn put_encrypted_blob(
+        &mut self,
+        plaintext: &[u8],
+        key_id: crate::id::KeyId,
+        keystore: &crate::crypto::KeyStore,
+        mime_type: Option<String>,
+    ) -> Result<crate::blob::BlobDescriptor, ClientError> {
+        self.security
+            .check_permission(&self.app_id, &Permission::WriteBlobs)?;
+        self.security
+            .check_permission(&self.app_id, &Permission::ReadCryptoKeys)?;
+        let blob_id = crate::id::BlobId::new();
+        let descriptor = self
+            .storage
+            .blobs_mut()
+            .put_encrypted(blob_id, plaintext, key_id, keystore, mime_type)?;
+        Ok(descriptor)
+    }
+
+    pub fn get_blob_descriptor(
+        &self,
+        id: &crate::id::BlobId,
+    ) -> Result<Option<crate::blob::BlobDescriptor>, ClientError> {
+        self.security
+            .check_permission(&self.app_id, &Permission::ReadBlobs)?;
+        Ok(self.storage.blobs().get_descriptor(id).cloned())
+    }
+
+    pub fn get_blob(&self, id: &crate::id::BlobId) -> Result<Vec<u8>, ClientError> {
+        self.security
+            .check_permission(&self.app_id, &Permission::ReadBlobs)?;
+        let data = self.storage.blobs().get_data(id)?;
+        Ok(data)
+    }
+
+    pub fn get_raw_blob(&self, id: &crate::id::BlobId) -> Result<Vec<u8>, ClientError> {
+        self.security
+            .check_permission(&self.app_id, &Permission::ReadBlobs)?;
+        let data = self.storage.blobs().get_raw_data(id)?;
+        Ok(data)
+    }
+
+    pub fn get_decrypted_blob(
+        &self,
+        id: &crate::id::BlobId,
+        keystore: &crate::crypto::KeyStore,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.security
+            .check_permission(&self.app_id, &Permission::ReadBlobs)?;
+        self.security
+            .check_permission(&self.app_id, &Permission::ReadCryptoKeys)?;
+        let data = self.storage.blobs().get_decrypted_data(id, keystore)?;
+        Ok(data)
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +236,63 @@ mod tests {
             loaded.get_property(&"title".into()),
             Some(&PropertyValue::from("Witaj PDS"))
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_client_blob_operations() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("pds_client_blob_test_{}", EntityId::new()));
+        let mut storage = DiskStorage::open(&temp_dir).unwrap();
+        let mut security = AccessController::new();
+
+        let mut app = AppRegistration::new("app:blobber", "Blob App");
+        app.grant(Permission::ReadBlobs);
+        app.grant(Permission::WriteBlobs);
+        app.grant(Permission::ReadCryptoKeys);
+        security.register_app(app);
+
+        let mut client = PdsClient::new("app:blobber", "dev-1", &security, &mut storage);
+
+        // 1. Plaintext blob
+        let data = b"Hello unencrypted world";
+        let desc = client.put_blob(data, Some("text/plain".into())).unwrap();
+        assert_eq!(desc.size_bytes, data.len() as u64);
+
+        let read_desc = client.get_blob_descriptor(&desc.id).unwrap().unwrap();
+        assert_eq!(read_desc.id, desc.id);
+
+        let fetched = client.get_blob(&desc.id).unwrap();
+        assert_eq!(fetched, data);
+
+        // 2. Encrypted blob
+        let mut keystore = crate::crypto::KeyStore::new();
+        let key_id = crate::id::KeyId::new();
+        let key_bytes = [7u8; 32];
+        keystore.insert_key(key_id, key_bytes);
+
+        let secret = b"Top secret personal payload";
+        let enc_desc = client
+            .put_encrypted_blob(
+                secret,
+                key_id,
+                &keystore,
+                Some("application/octet-stream".into()),
+            )
+            .unwrap();
+
+        // get_blob should fail because it requires keystore for encrypted blob
+        let direct_get = client.get_blob(&enc_desc.id);
+        assert!(direct_get.is_err());
+
+        // get_raw_blob should succeed and return ciphertext
+        let raw_data = client.get_raw_blob(&enc_desc.id).unwrap();
+        assert_ne!(raw_data, secret);
+
+        // get_decrypted_blob with keystore should succeed
+        let decrypted = client.get_decrypted_blob(&enc_desc.id, &keystore).unwrap();
+        assert_eq!(decrypted, secret);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

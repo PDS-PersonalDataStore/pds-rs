@@ -10,6 +10,7 @@ pub mod dag;
 pub mod entity;
 pub mod id;
 pub mod ipc;
+pub mod logging;
 pub mod net;
 pub mod np;
 pub mod operation;
@@ -29,7 +30,10 @@ pub use auth::{
     ClientAuthenticator, ClientHello, ClientId, ClientRecord, ClientStatus,
     DEFAULT_SUPPORTED_API_VERSIONS, create_client_auth_signature,
 };
-pub use blob::{BlobDescriptor, BlobEncryption, BlobError, BlobStore};
+pub use blob::{
+    BlobChunk, BlobDescriptor, BlobEncryption, BlobError, BlobStore, CHUNKING_THRESHOLD_BYTES,
+    FASTCDC_AVG_SIZE, FASTCDC_MAX_SIZE, FASTCDC_MIN_SIZE,
+};
 pub use change::{Change, ChangeMetadata, EncryptionMode};
 pub use client::{ClientError, PdsClient};
 pub use codec::{BinaryCodec, CodecError, PDS_MAGIC_HEADER};
@@ -42,6 +46,7 @@ pub use ipc::{
     EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
     IpcSessionManager, PdsIpcClient, Session,
 };
+pub use logging::{LoggingError, LoggingManager};
 pub use net::{
     BlobNetRequest, BlobNetResponse, NetAuthMessage, NetSyncError, PDS_ALPN, PDS_BLOB_ALPN,
     PDS_SYNC_ALPN, PdsNetworkNode,
