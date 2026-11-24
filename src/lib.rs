@@ -10,6 +10,7 @@ pub mod dag;
 pub mod entity;
 pub mod id;
 pub mod ipc;
+pub mod logging;
 pub mod net;
 pub mod np;
 pub mod operation;
@@ -45,6 +46,7 @@ pub use ipc::{
     EventTopic, IpcClientError, IpcNotification, IpcRequest, IpcResponse, IpcServerHandler,
     IpcSessionManager, PdsIpcClient, Session,
 };
+pub use logging::{LoggingConfig, LoggingError, LoggingManager};
 pub use net::{
     BlobNetRequest, BlobNetResponse, NetAuthMessage, NetSyncError, PDS_ALPN, PDS_BLOB_ALPN,
     PDS_SYNC_ALPN, PdsNetworkNode,
