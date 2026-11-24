@@ -73,6 +73,29 @@ impl KeyStore {
         })
     }
 
+    pub fn encrypt_with_nonce(
+        &self,
+        key_id: &KeyId,
+        nonce_bytes: &[u8; 12],
+        plaintext: &[u8],
+    ) -> Result<EncryptedData, CryptoError> {
+        let key_bytes = self
+            .get_key(key_id)
+            .ok_or(CryptoError::KeyNotFound(*key_id))?;
+        let cipher = ChaCha20Poly1305::new(&Key::from(*key_bytes));
+        let nonce = Nonce::from(*nonce_bytes);
+
+        let ciphertext = cipher
+            .encrypt(&nonce, plaintext)
+            .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
+
+        Ok(EncryptedData {
+            key_id: *key_id,
+            nonce: *nonce_bytes,
+            ciphertext,
+        })
+    }
+
     pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<Vec<u8>, CryptoError> {
         let key_bytes = self
             .get_key(&encrypted.key_id)
