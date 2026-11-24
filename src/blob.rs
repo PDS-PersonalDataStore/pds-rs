@@ -1,5 +1,6 @@
 use crate::crypto::{CryptoError, KeyStore};
 use crate::id::{BlobId, KeyId};
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -33,6 +34,18 @@ pub enum BlobEncryption {
     },
 }
 
+pub const FASTCDC_MIN_SIZE: usize = 16 * 1024; // 16 KiB
+pub const FASTCDC_AVG_SIZE: usize = 128 * 1024; // 128 KiB
+pub const FASTCDC_MAX_SIZE: usize = 1024 * 1024; // 1 MiB
+pub const CHUNKING_THRESHOLD_BYTES: usize = 1024 * 1024; // > 1 MiB
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobChunk {
+    pub sha256: String,
+    pub offset: u64,
+    pub length: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobDescriptor {
     pub id: BlobId,
@@ -41,6 +54,8 @@ pub struct BlobDescriptor {
     pub mime_type: Option<String>,
     #[serde(default)]
     pub encryption: BlobEncryption,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<Vec<BlobChunk>>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +119,39 @@ impl BlobStore {
         self.root_dir.join(prefix).join(rest)
     }
 
+    fn write_cas_file(&self, sha256: &str, data: &[u8]) -> io::Result<()> {
+        let path = self.blob_path(sha256);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if !path.exists() {
+            fs::write(&path, data)?;
+        }
+        Ok(())
+    }
+
+    fn read_cas_file(&self, sha256: &str) -> Result<Vec<u8>, BlobError> {
+        let path = self.blob_path(sha256);
+        let data = fs::read(&path)?;
+        let actual_hash = Self::compute_sha256(&data);
+        if actual_hash != sha256 {
+            return Err(BlobError::IntegrityMismatch {
+                expected: sha256.to_string(),
+                actual: actual_hash,
+            });
+        }
+        Ok(data)
+    }
+
+    pub fn derive_chunk_nonce(base_nonce: &[u8; 12], chunk_index: u32) -> [u8; 12] {
+        let mut chunk_nonce = *base_nonce;
+        let index_bytes = chunk_index.to_le_bytes();
+        for i in 0..4 {
+            chunk_nonce[8 + i] ^= index_bytes[i];
+        }
+        chunk_nonce
+    }
+
     pub fn put(
         &mut self,
         id: BlobId,
@@ -111,15 +159,30 @@ impl BlobStore {
         mime_type: Option<String>,
     ) -> Result<BlobDescriptor, BlobError> {
         let sha256 = Self::compute_sha256(data);
-        let path = self.blob_path(&sha256);
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if !path.exists() {
-            fs::write(&path, data)?;
-        }
+        let chunks = if data.len() > CHUNKING_THRESHOLD_BYTES {
+            let chunker = fastcdc::v2020::FastCDC::new(
+                data,
+                FASTCDC_MIN_SIZE,
+                FASTCDC_AVG_SIZE,
+                FASTCDC_MAX_SIZE,
+            );
+            let mut chunk_list = Vec::new();
+            for entry in chunker {
+                let chunk_slice = &data[entry.offset..entry.offset + entry.length];
+                let chunk_sha256 = Self::compute_sha256(chunk_slice);
+                self.write_cas_file(&chunk_sha256, chunk_slice)?;
+                chunk_list.push(BlobChunk {
+                    sha256: chunk_sha256,
+                    offset: entry.offset as u64,
+                    length: entry.length as u64,
+                });
+            }
+            Some(chunk_list)
+        } else {
+            self.write_cas_file(&sha256, data)?;
+            None
+        };
 
         let descriptor = BlobDescriptor {
             id,
@@ -127,6 +190,7 @@ impl BlobStore {
             size_bytes: data.len() as u64,
             mime_type,
             encryption: BlobEncryption::Plaintext,
+            chunks,
         };
 
         self.persist_descriptor(&descriptor)?;
@@ -142,33 +206,78 @@ impl BlobStore {
         keystore: &KeyStore,
         mime_type: Option<String>,
     ) -> Result<BlobDescriptor, BlobError> {
-        let encrypted_data = keystore.encrypt(&key_id, plaintext)?;
-        let sha256 = Self::compute_sha256(&encrypted_data.ciphertext);
-        let path = self.blob_path(&sha256);
+        if plaintext.len() > CHUNKING_THRESHOLD_BYTES {
+            let mut base_nonce = [0u8; 12];
+            rand::rng().fill(&mut base_nonce);
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            let chunker = fastcdc::v2020::FastCDC::new(
+                plaintext,
+                FASTCDC_MIN_SIZE,
+                FASTCDC_AVG_SIZE,
+                FASTCDC_MAX_SIZE,
+            );
+
+            let mut chunk_list = Vec::new();
+            let mut total_cipher_len: u64 = 0;
+            let mut whole_hasher = Sha256::new();
+
+            for (chunk_index, entry) in (0_u32..).zip(chunker) {
+                let chunk_plain = &plaintext[entry.offset..entry.offset + entry.length];
+                let chunk_nonce = Self::derive_chunk_nonce(&base_nonce, chunk_index);
+                let enc_chunk = keystore.encrypt_with_nonce(&key_id, &chunk_nonce, chunk_plain)?;
+                let chunk_sha256 = Self::compute_sha256(&enc_chunk.ciphertext);
+                whole_hasher.update(&enc_chunk.ciphertext);
+
+                self.write_cas_file(&chunk_sha256, &enc_chunk.ciphertext)?;
+                let chunk_len = enc_chunk.ciphertext.len() as u64;
+                chunk_list.push(BlobChunk {
+                    sha256: chunk_sha256,
+                    offset: total_cipher_len,
+                    length: chunk_len,
+                });
+                total_cipher_len += chunk_len;
+            }
+
+            let sha256 = hex::encode(whole_hasher.finalize());
+
+            let descriptor = BlobDescriptor {
+                id,
+                sha256,
+                size_bytes: total_cipher_len,
+                mime_type,
+                encryption: BlobEncryption::Encrypted {
+                    key_id,
+                    nonce: base_nonce,
+                    plaintext_size_bytes: plaintext.len() as u64,
+                },
+                chunks: Some(chunk_list),
+            };
+
+            self.persist_descriptor(&descriptor)?;
+            self.descriptors.insert(id, descriptor.clone());
+            Ok(descriptor)
+        } else {
+            let encrypted_data = keystore.encrypt(&key_id, plaintext)?;
+            let sha256 = Self::compute_sha256(&encrypted_data.ciphertext);
+            self.write_cas_file(&sha256, &encrypted_data.ciphertext)?;
+
+            let descriptor = BlobDescriptor {
+                id,
+                sha256,
+                size_bytes: encrypted_data.ciphertext.len() as u64,
+                mime_type,
+                encryption: BlobEncryption::Encrypted {
+                    key_id,
+                    nonce: encrypted_data.nonce,
+                    plaintext_size_bytes: plaintext.len() as u64,
+                },
+                chunks: None,
+            };
+
+            self.persist_descriptor(&descriptor)?;
+            self.descriptors.insert(id, descriptor.clone());
+            Ok(descriptor)
         }
-
-        if !path.exists() {
-            fs::write(&path, &encrypted_data.ciphertext)?;
-        }
-
-        let descriptor = BlobDescriptor {
-            id,
-            sha256,
-            size_bytes: encrypted_data.ciphertext.len() as u64,
-            mime_type,
-            encryption: BlobEncryption::Encrypted {
-                key_id,
-                nonce: encrypted_data.nonce,
-                plaintext_size_bytes: plaintext.len() as u64,
-            },
-        };
-
-        self.persist_descriptor(&descriptor)?;
-        self.descriptors.insert(id, descriptor.clone());
-        Ok(descriptor)
     }
 
     pub fn put_descriptor_and_data(
@@ -184,15 +293,7 @@ impl BlobStore {
             });
         }
 
-        let path = self.blob_path(&descriptor.sha256);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if !path.exists() {
-            fs::write(&path, data)?;
-        }
-
+        self.write_cas_file(&descriptor.sha256, data)?;
         self.persist_descriptor(&descriptor)?;
         self.descriptors.insert(descriptor.id, descriptor);
         Ok(())
@@ -204,18 +305,24 @@ impl BlobStore {
 
     pub fn get_raw_data(&self, id: &BlobId) -> Result<Vec<u8>, BlobError> {
         let descriptor = self.descriptors.get(id).ok_or(BlobError::NotFound(*id))?;
-        let path = self.blob_path(&descriptor.sha256);
-        let data = fs::read(&path)?;
 
-        let actual_hash = Self::compute_sha256(&data);
-        if actual_hash != descriptor.sha256 {
-            return Err(BlobError::IntegrityMismatch {
-                expected: descriptor.sha256.clone(),
-                actual: actual_hash,
-            });
+        if let Some(chunks) = &descriptor.chunks {
+            let mut combined = Vec::with_capacity(descriptor.size_bytes as usize);
+            for chunk in chunks {
+                let chunk_data = self.read_cas_file(&chunk.sha256)?;
+                combined.extend_from_slice(&chunk_data);
+            }
+            let actual_hash = Self::compute_sha256(&combined);
+            if actual_hash != descriptor.sha256 {
+                return Err(BlobError::IntegrityMismatch {
+                    expected: descriptor.sha256.clone(),
+                    actual: actual_hash,
+                });
+            }
+            Ok(combined)
+        } else {
+            self.read_cas_file(&descriptor.sha256)
         }
-
-        Ok(data)
     }
 
     pub fn get_data(&self, id: &BlobId) -> Result<Vec<u8>, BlobError> {
@@ -232,18 +339,38 @@ impl BlobStore {
         keystore: &KeyStore,
     ) -> Result<Vec<u8>, BlobError> {
         let descriptor = self.descriptors.get(id).ok_or(BlobError::NotFound(*id))?;
-        let raw_data = self.get_raw_data(id)?;
 
         match &descriptor.encryption {
-            BlobEncryption::Plaintext => Ok(raw_data),
-            BlobEncryption::Encrypted { key_id, nonce, .. } => {
-                let enc_data = crate::crypto::EncryptedData {
-                    key_id: *key_id,
-                    nonce: *nonce,
-                    ciphertext: raw_data,
-                };
-                let plaintext = keystore.decrypt(&enc_data)?;
-                Ok(plaintext)
+            BlobEncryption::Plaintext => self.get_raw_data(id),
+            BlobEncryption::Encrypted {
+                key_id,
+                nonce,
+                plaintext_size_bytes,
+            } => {
+                if let Some(chunks) = &descriptor.chunks {
+                    let mut plaintext = Vec::with_capacity(*plaintext_size_bytes as usize);
+                    for (index, chunk) in chunks.iter().enumerate() {
+                        let chunk_cipher = self.read_cas_file(&chunk.sha256)?;
+                        let chunk_nonce = Self::derive_chunk_nonce(nonce, index as u32);
+                        let enc_data = crate::crypto::EncryptedData {
+                            key_id: *key_id,
+                            nonce: chunk_nonce,
+                            ciphertext: chunk_cipher,
+                        };
+                        let chunk_plain = keystore.decrypt(&enc_data)?;
+                        plaintext.extend_from_slice(&chunk_plain);
+                    }
+                    Ok(plaintext)
+                } else {
+                    let raw_data = self.get_raw_data(id)?;
+                    let enc_data = crate::crypto::EncryptedData {
+                        key_id: *key_id,
+                        nonce: *nonce,
+                        ciphertext: raw_data,
+                    };
+                    let plain = keystore.decrypt(&enc_data)?;
+                    Ok(plain)
+                }
             }
         }
     }
@@ -333,6 +460,79 @@ mod tests {
             .get_decrypted_data(&blob_id, &keystore)
             .unwrap();
         assert_eq!(reloaded_decrypted, secret_data);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_blob_store_fastcdc_chunking_plaintext_and_encrypted() {
+        let temp_dir = std::env::temp_dir().join(format!("pds_blob_chunk_test_{}", BlobId::new()));
+        let mut store = BlobStore::new(&temp_dir).unwrap();
+        let mut keystore = KeyStore::new();
+        let (key_id, _) = keystore.generate_key();
+
+        // 1. Create large data payload > 1 MiB (e.g. 1.5 MiB with repeating patterned content)
+        let total_size = 1536 * 1024; // 1.5 MiB
+        let mut large_data = Vec::with_capacity(total_size);
+        for i in 0..total_size {
+            large_data.push((i % 251) as u8);
+        }
+
+        // 2. Put large plaintext blob
+        let plain_id = BlobId::new();
+        let plain_desc = store
+            .put(
+                plain_id,
+                &large_data,
+                Some("application/octet-stream".into()),
+            )
+            .unwrap();
+
+        assert!(plain_desc.chunks.is_some());
+        let chunks = plain_desc.chunks.as_ref().unwrap();
+        assert!(chunks.len() > 1, "Must have split into multiple chunks");
+
+        // Verify total length matches sum of chunks
+        let total_chunks_len: u64 = chunks.iter().map(|c| c.length).sum();
+        assert_eq!(total_chunks_len, large_data.len() as u64);
+
+        // Verify retrieval of chunked plaintext blob
+        let retrieved_plain = store.get_data(&plain_id).unwrap();
+        assert_eq!(retrieved_plain, large_data);
+
+        // 3. Put large encrypted blob
+        let enc_id = BlobId::new();
+        let enc_desc = store
+            .put_encrypted(
+                enc_id,
+                &large_data,
+                key_id,
+                &keystore,
+                Some("application/octet-stream".into()),
+            )
+            .unwrap();
+
+        assert!(enc_desc.chunks.is_some());
+        let enc_chunks = enc_desc.chunks.as_ref().unwrap();
+        assert!(enc_chunks.len() > 1);
+
+        // Raw data should be combined ciphertexts
+        let raw_cipher = store.get_raw_data(&enc_id).unwrap();
+        assert_ne!(raw_cipher, large_data);
+
+        // Decryption of chunked encrypted blob must succeed and reconstruct original payload
+        let decrypted_large = store.get_decrypted_data(&enc_id, &keystore).unwrap();
+        assert_eq!(decrypted_large, large_data);
+
+        // 4. Persistence check: Reload store from disk and verify chunked blob recovery
+        let reloaded_store = BlobStore::new(&temp_dir).unwrap();
+        let reloaded_plain = reloaded_store.get_data(&plain_id).unwrap();
+        assert_eq!(reloaded_plain, large_data);
+
+        let reloaded_enc = reloaded_store
+            .get_decrypted_data(&enc_id, &keystore)
+            .unwrap();
+        assert_eq!(reloaded_enc, large_data);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
