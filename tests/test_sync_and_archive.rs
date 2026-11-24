@@ -109,6 +109,7 @@ fn test_archive_export_import_and_binary_codec() {
         size_bytes: 0,
         mime_type: Some("application/octet-stream".to_string()),
         encryption: pds::BlobEncryption::Plaintext,
+        chunks: None,
     };
 
     let archive = PdsArchive::new(vec![change], vec![], vec![blob_desc]);
