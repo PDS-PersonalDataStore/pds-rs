@@ -21,9 +21,11 @@ static CURRENT_LEVEL: RwLock<String> = RwLock::new(String::new());
 pub struct LoggingManager;
 
 impl LoggingManager {
-    /// Initializes logging system in-memory with the given initial filter.
-    /// If no initial filter is provided, defaults to "info".
-    pub fn init(initial_level: Option<&str>) -> Result<(), LoggingError> {
+    /// Initializes logging system with a custom tracing layer (e.g. Android Logcat, OpenTelemetry).
+    pub fn init_custom<L>(initial_level: Option<&str>, layer: L) -> Result<(), LoggingError>
+    where
+        L: tracing_subscriber::Layer<Registry> + Send + Sync + 'static,
+    {
         let filter_str = initial_level.unwrap_or("info");
 
         {
@@ -36,13 +38,17 @@ impl LoggingManager {
 
         let _ = LOG_HANDLE.set(reload_handle);
 
-        let subscriber = tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(tracing_subscriber::fmt::layer());
+        let subscriber = tracing_subscriber::registry().with(layer.with_filter(filter_layer));
 
         let _ = subscriber.try_init();
 
         Ok(())
+    }
+
+    /// Initializes logging system in-memory using the default fmt::layer() (stdout).
+    /// If no initial filter is provided, defaults to "info".
+    pub fn init(initial_level: Option<&str>) -> Result<(), LoggingError> {
+        Self::init_custom(initial_level, tracing_subscriber::fmt::layer())
     }
 
     /// Returns current log level / filter string.
@@ -79,8 +85,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dynamic_logging_level_in_memory() {
-        LoggingManager::init(Some("info")).unwrap();
+    fn test_dynamic_logging_level_and_custom_layer() {
+        // Test custom layer delegation
+        let custom_layer = tracing_subscriber::fmt::layer().compact();
+        let result = LoggingManager::init_custom(Some("info"), custom_layer);
+        assert!(result.is_ok());
+
         assert_eq!(LoggingManager::get_level(), "info");
 
         // Change level dynamically
