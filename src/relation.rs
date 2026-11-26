@@ -1,21 +1,29 @@
+//! Relation types and hypergraph relation definitions.
+
 use crate::id::{EntityId, RelationId};
 use crate::value::{PropertyName, PropertyValue};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
+/// Represents errors that can occur when creating or modifying relations.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RelationError {
+    /// Relation must contain at least one member.
     #[error("Relation must have at least one member")]
     EmptyMembers,
 }
 
+/// Represents an entity participant and its role in a relation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationMember {
+    /// Identifier of the participant entity.
     pub entity_id: EntityId,
+    /// Role of the participant entity within the relation.
     pub role: String,
 }
 
 impl RelationMember {
+    /// Creates a new relation member with an entity identifier and role name.
     pub fn new(entity_id: EntityId, role: impl Into<String>) -> Self {
         Self {
             entity_id,
@@ -24,11 +32,16 @@ impl RelationMember {
     }
 }
 
+/// Represents a hypergraph relation connecting one or more entities with arbitrary roles.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Relation {
+    /// Unique identifier of the relation.
     pub id: RelationId,
+    /// Type name of the relation.
     pub relation_type: String,
+    /// List of entity participants and their roles.
     pub members: Vec<RelationMember>,
+    /// Map of property names to property values.
     pub properties: BTreeMap<PropertyName, PropertyValue>,
 }
 
@@ -156,14 +169,17 @@ impl Relation {
         self.members.iter().any(|m| m.entity_id == *entity_id)
     }
 
+    /// Sets or replaces the value of a property on the relation.
     pub fn set_property(&mut self, name: impl Into<PropertyName>, value: impl Into<PropertyValue>) {
         self.properties.insert(name.into(), value.into());
     }
 
+    /// Retrieves a reference to a property value if present.
     pub fn get_property(&self, name: &PropertyName) -> Option<&PropertyValue> {
         self.properties.get(name)
     }
 
+    /// Removes a property by name and returns its previous value if present.
     pub fn remove_property(&mut self, name: &PropertyName) -> Option<PropertyValue> {
         self.properties.remove(name)
     }

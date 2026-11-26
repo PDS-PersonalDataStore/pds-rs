@@ -1,3 +1,5 @@
+//! Property names and strongly typed property values.
+
 use crate::id::{BlobId, EntityId, KeyId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -5,13 +7,17 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+/// Namespaced or simple property key used in entities and relations.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PropertyName {
+    /// Optional namespace prefix of the property.
     pub namespace: Option<String>,
+    /// Base name of the property.
     pub name: String,
 }
 
 impl PropertyName {
+    /// Creates a new property name without a namespace.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             namespace: None,
@@ -19,6 +25,7 @@ impl PropertyName {
         }
     }
 
+    /// Creates a new property name with a namespace and a name.
     pub fn with_namespace(namespace: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             namespace: Some(namespace.into()),
@@ -73,19 +80,36 @@ impl<'de> Deserialize<'de> for PropertyName {
     }
 }
 
+/// Strongly typed dynamic property value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum PropertyValue {
+    /// Null or unset property value.
     Null,
+    /// Boolean value.
     Bool(bool),
+    /// 64-bit signed integer value.
     Int(i64),
+    /// 64-bit floating point number.
     Float(f64),
+    /// UTF-8 text string value.
     Text(String),
+    /// UTC timestamp value.
     DateTime(DateTime<Utc>),
+    /// Reference to another entity identifier.
     EntityRef(EntityId),
+    /// Reference to a stored binary blob identifier.
     BlobRef(BlobId),
-    Encrypted { key_id: KeyId, ciphertext: Vec<u8> },
+    /// Encrypted ciphertext with associated key identifier.
+    Encrypted {
+        /// Identifier of the key used to encrypt the payload.
+        key_id: KeyId,
+        /// Encrypted ciphertext bytes.
+        ciphertext: Vec<u8>,
+    },
+    /// Ordered list of property values.
     List(Vec<PropertyValue>),
+    /// Key-value mapping of nested property values.
     Map(BTreeMap<String, PropertyValue>),
 }
 

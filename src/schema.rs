@@ -3,47 +3,73 @@ use crate::value::{PropertyName, PropertyValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Expected data type of a property.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PropertyType {
+    /// Boolean value.
     Bool,
+    /// Signed 64-bit integer.
     Int,
+    /// 64-bit floating point number.
     Float,
+    /// UTF-8 text string.
     Text,
+    /// UTC date and time timestamp.
     DateTime,
+    /// Reference to another entity.
     EntityRef,
+    /// Reference to a binary large object.
     BlobRef,
+    /// List of property values.
     List,
+    /// Map of string keys to property values.
     Map,
+    /// Accepts any property type.
     Any,
 }
 
+/// Definition of a property in an entity schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PropertyDefinition {
+    /// Name of the property.
     pub name: PropertyName,
+    /// Expected data type of the property.
     pub expected_type: PropertyType,
+    /// Indicates if the property is mandatory.
     pub required: bool,
 }
 
+/// Error returned when entity data fails schema validation.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SchemaValidationError {
+    /// A mandatory property is missing.
     #[error("Missing required property: {0}")]
     MissingRequired(PropertyName),
+    /// Property value does not match expected type.
     #[error("Type mismatch for property {name}: expected {expected:?}, found {actual}")]
     TypeMismatch {
+        /// Name of the mismatched property.
         name: PropertyName,
+        /// Expected property type.
         expected: PropertyType,
+        /// Actual property type found.
         actual: String,
     },
 }
 
+/// Schema defining the structure and validation rules of an entity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntitySchema {
+    /// Type name of the entity.
     pub entity_type: String,
+    /// Schema version number.
     pub version: u32,
+    /// Property definitions mapped by property name.
     pub properties: BTreeMap<PropertyName, PropertyDefinition>,
 }
 
 impl EntitySchema {
+    /// Creates a new entity schema with the specified type and version.
     pub fn new(entity_type: impl Into<String>, version: u32) -> Self {
         Self {
             entity_type: entity_type.into(),
@@ -52,6 +78,7 @@ impl EntitySchema {
         }
     }
 
+    /// Adds a property definition to the schema.
     pub fn add_property(
         &mut self,
         name: impl Into<PropertyName>,
@@ -69,6 +96,7 @@ impl EntitySchema {
         );
     }
 
+    /// Validates an entity against this schema.
     pub fn validate(&self, entity: &Entity) -> Result<(), SchemaValidationError> {
         for (prop_name, def) in &self.properties {
             match entity.get_property(prop_name) {
@@ -91,6 +119,7 @@ impl EntitySchema {
         Ok(())
     }
 
+    /// Validates an operation against this schema.
     pub fn validate_operation(
         &self,
         op: &crate::operation::Operation,

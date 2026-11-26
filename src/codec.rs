@@ -1,28 +1,46 @@
+//! Binary serialization and deserialization using CBOR and SHA-256 checksums.
+
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
+/// Magic 4-byte header identifying PDS binary payloads.
 pub const PDS_MAGIC_HEADER: &[u8; 4] = b"PDS1";
 
+/// Errors produced during binary encoding and decoding.
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
+    /// Magic header does not match the expected value.
     #[error("Invalid magic header: expected {expected:?}, got {actual:?}")]
-    InvalidMagic { expected: [u8; 4], actual: [u8; 4] },
+    InvalidMagic {
+        /// Expected 4-byte header.
+        expected: [u8; 4],
+        /// Actual 4-byte header found in the payload.
+        actual: [u8; 4],
+    },
+    /// Data buffer is too short to contain the header and checksum.
     #[error("Data too short to contain magic header and checksum")]
     TooShort,
+    /// Computed checksum does not match the stored checksum.
     #[error("Checksum mismatch: expected {expected:?}, got {actual:?}")]
     ChecksumMismatch {
+        /// Expected SHA-256 checksum.
         expected: [u8; 32],
+        /// Actual calculated SHA-256 checksum.
         actual: [u8; 32],
     },
+    /// CBOR serialization failure.
     #[error("CBOR serialization error: {0}")]
     CborSer(String),
+    /// CBOR deserialization failure.
     #[error("CBOR deserialization error: {0}")]
     CborDe(String),
 }
 
+/// Provides binary encoding and decoding routines with checksum verification.
 pub struct BinaryCodec;
 
 impl BinaryCodec {
+    /// Serializes a value into CBOR bytes prefixed with magic header and SHA-256 checksum.
     pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CodecError> {
         let mut payload = Vec::new();
         ciborium::into_writer(value, &mut payload)
@@ -40,6 +58,7 @@ impl BinaryCodec {
         Ok(output)
     }
 
+    /// Validates header and checksum, then deserializes a value from CBOR bytes.
     pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
         if bytes.len() < 36 {
             return Err(CodecError::TooShort);

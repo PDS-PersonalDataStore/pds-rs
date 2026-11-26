@@ -11,49 +11,72 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+/// Errors occurring in persistent storage operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
+    /// Underlying input/output error.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+    /// Serialization or deserialization error.
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+    /// Directed acyclic graph validation error.
     #[error("DAG error: {0}")]
     Dag(#[from] DagError),
+    /// Binary large object storage error.
     #[error("Blob error: {0}")]
     Blob(#[from] BlobError),
+    /// SQLite database operation error.
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }
 
+/// Client synchronization cursor record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCursor {
+    /// Identifier of the client.
     pub client_id: ClientId,
+    /// Optional identifier of the last acknowledged change.
     pub last_ack_change_id: Option<ChangeId>,
+    /// Timestamp when the cursor was last updated.
     pub updated_at: DateTime<Utc>,
 }
 
+/// Routing record containing network address information for a peer node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerRoutingRecord {
+    /// Identifier of the peer node.
     pub node_id: String,
+    /// Serialized JSON endpoint address of the peer.
     pub endpoint_addr_json: String,
+    /// Timestamp when the peer was last observed.
     pub last_seen_at: DateTime<Utc>,
 }
 
+/// Rule specifying conditions for synchronizing binary large objects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobSyncRule {
+    /// Unique identifier of the sync rule.
     pub id: String,
+    /// Optional application identifier filter.
     pub app_id: Option<String>,
+    /// Optional entity type filter.
     pub entity_type: Option<String>,
+    /// Optional relation type filter.
     pub relation_type: Option<String>,
+    /// Optional maximum blob size limit in bytes.
     pub max_size_bytes: Option<u64>,
+    /// Timestamp when the rule was created.
     pub created_at: DateTime<Utc>,
 }
 
+/// Tuple containing loaded trusted nodes and their associated revocation secrets.
 pub type LoadedTrustedNodes = (
     Vec<crate::trust::TrustedNode>,
     std::collections::BTreeMap<String, [u8; 32]>,
 );
 
+/// File-system storage engine using JSON lines for change history.
 pub struct DiskStorage {
     root_dir: PathBuf,
     dag: HistoryDag,
@@ -63,6 +86,7 @@ pub struct DiskStorage {
 }
 
 impl DiskStorage {
+    /// Opens or creates disk storage at the specified root directory.
     pub fn open(root_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
         let root_dir = root_dir.as_ref().to_path_buf();
         fs::create_dir_all(&root_dir)?;
@@ -109,6 +133,7 @@ impl DiskStorage {
         Ok(())
     }
 
+    /// Appends a change to the history graph and persists it to disk.
     pub fn append_change(&mut self, change: Change) -> Result<(), StorageError> {
         self.dag.insert(change.clone())?;
         self.state.apply_change(&change);
@@ -123,26 +148,32 @@ impl DiskStorage {
         Ok(())
     }
 
+    /// Returns a reference to the in-memory history graph.
     pub fn dag(&self) -> &HistoryDag {
         &self.dag
     }
 
+    /// Returns a reference to the materialized dataset state.
     pub fn state(&self) -> &DatasetState {
         &self.state
     }
 
+    /// Returns a reference to the blob store.
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
     }
 
+    /// Returns a mutable reference to the blob store.
     pub fn blobs_mut(&mut self) -> &mut BlobStore {
         &mut self.blobs
     }
 
+    /// Returns the total number of changes stored in the history graph.
     pub fn change_count(&self) -> usize {
         self.dag.len()
     }
 
+    /// Retrieves a change by its identifier.
     pub fn get_change(&self, id: &ChangeId) -> Option<&Change> {
         self.dag.get(id)
     }
@@ -171,12 +202,14 @@ impl DiskStorage {
         Ok(())
     }
 
+    /// Retrieves the last acknowledged change identifier for a client.
     pub fn get_client_cursor(&self, client_id: &ClientId) -> Option<ChangeId> {
         self.cursors
             .get(client_id)
             .and_then(|c| c.last_ack_change_id)
     }
 
+    /// Updates the last acknowledged change identifier for a client.
     pub fn set_client_cursor(
         &mut self,
         client_id: ClientId,
@@ -192,6 +225,7 @@ impl DiskStorage {
     }
 }
 
+/// Persistent storage engine backed by SQLite and a content-addressed blob store.
 pub struct SqliteStorage {
     root_dir: PathBuf,
     conn: rusqlite::Connection,
@@ -207,6 +241,7 @@ unsafe impl Send for SqliteStorage {}
 unsafe impl Sync for SqliteStorage {}
 
 impl SqliteStorage {
+    /// Opens or creates SQLite storage at the specified root directory.
     pub fn open(root_dir: impl AsRef<Path>) -> Result<Self, StorageError> {
         let root_dir = root_dir.as_ref().to_path_buf();
         fs::create_dir_all(&root_dir)?;
@@ -292,6 +327,7 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Appends a change to the database and in-memory history graph.
     pub fn append_change(&mut self, change: Change) -> Result<(), StorageError> {
         self.dag.insert(change.clone())?;
         self.state.apply_change(&change);
@@ -308,34 +344,42 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Returns the root directory path.
     pub fn root_dir(&self) -> &Path {
         &self.root_dir
     }
 
+    /// Returns a reference to the in-memory history graph.
     pub fn dag(&self) -> &HistoryDag {
         &self.dag
     }
 
+    /// Returns a reference to the materialized dataset state.
     pub fn state(&self) -> &DatasetState {
         &self.state
     }
 
+    /// Returns a reference to the blob store.
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
     }
 
+    /// Returns a mutable reference to the blob store.
     pub fn blobs_mut(&mut self) -> &mut BlobStore {
         &mut self.blobs
     }
 
+    /// Returns the total number of changes in the history graph.
     pub fn change_count(&self) -> usize {
         self.dag.len()
     }
 
+    /// Retrieves a change by its identifier.
     pub fn get_change(&self, id: &ChangeId) -> Option<&Change> {
         self.dag.get(id)
     }
 
+    /// Retrieves the last acknowledged change identifier for a client.
     pub fn get_client_cursor(&self, client_id: &ClientId) -> Option<ChangeId> {
         let client_id_str = client_id.to_string();
         let res: rusqlite::Result<Option<String>> = self.conn.query_row(
@@ -350,6 +394,7 @@ impl SqliteStorage {
         }
     }
 
+    /// Updates the last acknowledged change identifier for a client.
     pub fn set_client_cursor(
         &mut self,
         client_id: ClientId,
@@ -371,6 +416,7 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Saves or updates a trusted node record in the database.
     pub fn save_trusted_node(
         &mut self,
         node: &crate::trust::TrustedNode,
@@ -406,6 +452,7 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Loads all trusted nodes and revocation secrets from the database.
     pub fn load_trusted_nodes(&self) -> Result<LoadedTrustedNodes, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT node_id, name, public_key, revocation_hash, revocation_secret, is_revoked, created_at, revoked_at FROM trusted_nodes"
@@ -486,6 +533,7 @@ impl SqliteStorage {
         Ok((nodes, secrets))
     }
 
+    /// Saves or updates peer routing information.
     pub fn save_peer_routing(
         &self,
         node_id: &str,
@@ -504,6 +552,7 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Loads all peer routing records from the database.
     pub fn load_all_peer_routing(&self) -> Result<Vec<PeerRoutingRecord>, StorageError> {
         let mut stmt = self
             .conn
@@ -531,6 +580,7 @@ impl SqliteStorage {
         Ok(list)
     }
 
+    /// Saves or updates a blob synchronization rule.
     pub fn save_blob_sync_rule(&self, rule: &BlobSyncRule) -> Result<(), StorageError> {
         let created_at_str = rule.created_at.to_rfc3339();
         let max_size_i64 = rule.max_size_bytes.map(|s| s as i64);
@@ -554,6 +604,7 @@ impl SqliteStorage {
         Ok(())
     }
 
+    /// Loads all blob synchronization rules from the database.
     pub fn load_blob_sync_rules(&self) -> Result<Vec<BlobSyncRule>, StorageError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, app_id, entity_type, relation_type, max_size_bytes, created_at FROM blob_sync_rules"
@@ -595,6 +646,7 @@ impl SqliteStorage {
         Ok(list)
     }
 
+    /// Deletes a blob synchronization rule by identifier.
     pub fn delete_blob_sync_rule(&self, rule_id: &str) -> Result<bool, StorageError> {
         let affected = self.conn.execute(
             "DELETE FROM blob_sync_rules WHERE id = ?1",

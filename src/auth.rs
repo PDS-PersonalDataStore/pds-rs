@@ -6,16 +6,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use ulid::Ulid;
 
+/// Current default API version.
 pub const API_VERSION: &str = "1.4.0";
+/// List of default supported API versions.
 pub const DEFAULT_SUPPORTED_API_VERSIONS: &[&str] =
     &["1.0.0", "1.0.1", "1.1.0", "1.2.0", "1.3.0", "1.4.0"];
+/// Context separation domain string for authentication signatures.
 pub const AUTH_CONTEXT_TAG: &str = "PDS-CLIENT-AUTH-v1";
 
+/// Unique identifier for an authenticated client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ClientId(pub Ulid);
 
 impl ClientId {
+    /// Generates a new random client identifier.
     pub fn new() -> Self {
         Self(Ulid::generate())
     }
@@ -33,35 +38,54 @@ impl std::fmt::Display for ClientId {
     }
 }
 
+/// Lifecycle status of an authorized client application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientStatus {
+    /// Registration is pending administrative approval.
     Pending,
+    /// Client is active and permitted to authenticate.
     Active,
+    /// Client access is temporarily suspended.
     Suspended,
+    /// Client access has been permanently revoked.
     Revoked,
 }
 
+/// Persistent record of a registered client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientRecord {
+    /// Unique identifier of the client.
     pub client_id: ClientId,
+    /// Human-readable application name.
     pub name: String,
+    /// Ed25519 public key bytes.
     pub public_key: [u8; 32],
+    /// Current status of the client.
     pub status: ClientStatus,
+    /// Granted permission set.
     pub permissions: BTreeSet<Permission>,
+    /// Timestamp when the client registered.
     pub created_at: DateTime<Utc>,
 }
 
+/// Initial handshake message sent by a connecting client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientHello {
+    /// Identifier of the client.
     pub client_id: ClientId,
+    /// Preferred API version.
     pub api_version: String,
+    /// Random client nonce for handshake freshness.
     pub client_nonce: [u8; 32],
+    /// List of advertised client capabilities.
     pub capabilities: Vec<String>,
+    /// List of supported API versions for negotiation.
     #[serde(default)]
     pub supported_versions: Vec<String>,
 }
 
 impl ClientHello {
+    /// Creates a new hello message with specified parameters.
     pub fn new(
         client_id: ClientId,
         api_version: impl Into<String>,
@@ -77,6 +101,7 @@ impl ClientHello {
         }
     }
 
+    /// Sets supported API versions for version negotiation.
     pub fn with_supported_versions<I, S>(mut self, versions: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -87,47 +112,76 @@ impl ClientHello {
     }
 }
 
+/// Challenge sent by the server in response to a client hello.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthChallenge {
+    /// Unique identifier of the server instance.
     pub server_instance_id: String,
+    /// Identifier of the target client.
     pub client_id: ClientId,
+    /// Echoed client nonce.
     pub client_nonce: [u8; 32],
+    /// Random server nonce.
     pub server_nonce: [u8; 32],
+    /// Negotiated API version.
     pub api_version: String,
+    /// Expiration timestamp of the challenge.
     pub challenge_expires_at: DateTime<Utc>,
 }
 
+/// Authentication response containing the challenge signature.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientAuth {
+    /// Identifier of the client.
     pub client_id: ClientId,
+    /// Ed25519 signature over the canonical challenge payload.
     pub signature: Vec<u8>,
 }
 
+/// Confirmation message returned upon successful authentication.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthSuccess {
+    /// Unique session identifier token.
     pub session_id: String,
+    /// Identifier of the authenticated client.
     pub client_id: ClientId,
+    /// Granted permission set.
     pub permissions: BTreeSet<Permission>,
+    /// Expiration timestamp of the session.
     pub expires_at: DateTime<Utc>,
+    /// Negotiated API version.
     pub api_version: String,
 }
 
+/// Errors encountered during client authentication.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AuthError {
+    /// Client identifier was not found.
     #[error("Client not found: {0}")]
     ClientNotFound(ClientId),
+    /// Client is not in active status.
     #[error("Client is not active (status: {0:?})")]
     ClientNotActive(ClientStatus),
+    /// Challenge timestamp has expired.
     #[error("Challenge expired")]
     ChallengeExpired,
+    /// Challenge parameters or nonces are invalid.
     #[error("Invalid challenge nonce or parameters")]
     InvalidChallenge,
+    /// Cryptographic signature verification failed.
     #[error("Invalid signature")]
     InvalidSignature,
+    /// Client and server could not negotiate a common API version.
     #[error("Unsupported API version: expected {expected}, got {actual}")]
-    UnsupportedApiVersion { expected: String, actual: String },
+    UnsupportedApiVersion {
+        /// Expected or supported versions.
+        expected: String,
+        /// Version requested by the client.
+        actual: String,
+    },
 }
 
+/// Manages client authentication and challenge-response handshakes.
 pub struct ClientAuthenticator {
     server_instance_id: String,
     supported_versions: Vec<String>,
@@ -136,6 +190,7 @@ pub struct ClientAuthenticator {
 }
 
 impl ClientAuthenticator {
+    /// Creates a new client authenticator for a server instance.
     pub fn new(server_instance_id: impl Into<String>) -> Self {
         Self {
             server_instance_id: server_instance_id.into(),
@@ -148,6 +203,7 @@ impl ClientAuthenticator {
         }
     }
 
+    /// Sets the supported API versions.
     pub fn with_supported_versions<I, S>(mut self, versions: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -157,16 +213,19 @@ impl ClientAuthenticator {
         self
     }
 
+    /// Returns the supported API versions.
     pub fn supported_versions(&self) -> &[String] {
         &self.supported_versions
     }
 
+    /// Registers a new client with pending status.
     pub fn register_client(&mut self, name: impl Into<String>, public_key: [u8; 32]) -> ClientId {
         let client_id = ClientId::new();
         self.insert_client(client_id, name, public_key);
         client_id
     }
 
+    /// Inserts a client record directly.
     pub fn insert_client(
         &mut self,
         client_id: ClientId,
@@ -184,6 +243,7 @@ impl ClientAuthenticator {
         self.clients.insert(client_id, record);
     }
 
+    /// Approves a client and grants permissions.
     pub fn approve_client(&mut self, client_id: &ClientId, permissions: BTreeSet<Permission>) {
         if let Some(client) = self.clients.get_mut(client_id) {
             client.status = ClientStatus::Active;
@@ -191,10 +251,12 @@ impl ClientAuthenticator {
         }
     }
 
+    /// Retrieves a client record by identifier.
     pub fn get_client(&self, client_id: &ClientId) -> Option<&ClientRecord> {
         self.clients.get(client_id)
     }
 
+    /// Negotiates an API version between client and server.
     pub fn negotiate_version(&self, hello: &ClientHello) -> Result<String, AuthError> {
         let requested_versions: Vec<&str> = if !hello.supported_versions.is_empty() {
             hello
@@ -218,6 +280,7 @@ impl ClientAuthenticator {
         })
     }
 
+    /// Processes a client hello and generates an authentication challenge.
     pub fn handle_client_hello(&mut self, hello: &ClientHello) -> Result<AuthChallenge, AuthError> {
         let negotiated_version = self.negotiate_version(hello)?;
 
@@ -247,6 +310,7 @@ impl ClientAuthenticator {
         Ok(challenge)
     }
 
+    /// Computes the canonical byte payload for challenge signing.
     pub fn compute_signing_payload(
         server_instance_id: &str,
         client_id: &ClientId,
@@ -264,6 +328,7 @@ impl ClientAuthenticator {
         data
     }
 
+    /// Verifies a client authentication response.
     pub fn handle_client_auth(&mut self, auth: &ClientAuth) -> Result<AuthSuccess, AuthError> {
         let challenge = self
             .active_challenges
@@ -314,6 +379,7 @@ impl ClientAuthenticator {
     }
 }
 
+/// Generates an authentication signature for a challenge.
 pub fn create_client_auth_signature(
     signing_key: &SigningKey,
     challenge: &AuthChallenge,

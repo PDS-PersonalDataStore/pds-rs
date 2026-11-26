@@ -21,28 +21,40 @@ pub const PDS_BLOB_ALPN: &[u8] = b"/pds/blob/1.0";
 /// Legacy alias for compatibility
 pub const PDS_ALPN: &[u8] = PDS_SYNC_ALPN;
 
+/// Errors related to network transport and synchronization.
 #[derive(Debug, thiserror::Error)]
 pub enum NetSyncError {
+    /// Connection error in endpoint transport.
     #[error("Iroh connection error: {0}")]
     Connection(#[from] iroh::endpoint::ConnectionError),
+    /// Connection attempt error.
     #[error("Iroh connect error: {0}")]
     Connect(#[from] iroh::endpoint::ConnectError),
+    /// Endpoint binding error.
     #[error("Iroh bind error: {0}")]
     Bind(#[from] iroh::endpoint::BindError),
+    /// Error reading data from stream.
     #[error("Iroh read error: {0}")]
     Read(String),
+    /// Error writing data to stream.
     #[error("Iroh write error: {0}")]
     Write(String),
+    /// Underlying input/output error.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Serialization or deserialization error.
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+    /// Synchronization engine error.
     #[error("Sync engine error: {0}")]
     Sync(#[from] SyncError),
+    /// Device trust verification error.
     #[error("Trust error: {0}")]
     Trust(#[from] TrustError),
+    /// Peer node is not authorized.
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
+    /// Protocol handshake or message sequence error.
     #[error("Protocol error: {0}")]
     Protocol(String),
 }
@@ -50,28 +62,46 @@ pub enum NetSyncError {
 /// Authentication handshake message on /pds/sync/1.0
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetAuthMessage {
+    /// Initial authentication greeting from connecting node.
     AuthHello {
+        /// Node identifier of the sender.
         node_id: String,
+        /// Ed25519 public key of the sender.
         public_key: [u8; 32],
     },
+    /// Challenge issued to verify sender identity.
     AuthChallenge {
+        /// Random challenge bytes to sign.
         challenge: [u8; 32],
     },
+    /// Signed response to authentication challenge.
     AuthResponse {
+        /// Public key used to sign the challenge.
         public_key: [u8; 32],
+        /// Signature over the challenge bytes.
         signature: Vec<u8>,
     },
+    /// Successful authentication confirmation.
     AuthSuccess {
+        /// Temporary session token for authorized requests.
         session_token: [u8; 32],
+        /// Expiration timestamp of the session token.
         expires_at: DateTime<Utc>,
     },
+    /// Authentication failed with the specified reason.
     AuthFailed(String),
+    /// Announcement of local DAG head changes.
     HeadAnnounce {
+        /// Node identifier announcing the heads.
         node_id: String,
+        /// Current set of DAG head change identifiers.
         heads: BTreeSet<crate::id::ChangeId>,
     },
+    /// Reply to a DAG head announcement.
     HeadAnnounceReply {
+        /// Head change identifiers of the responding node.
         heads: BTreeSet<crate::id::ChangeId>,
+        /// Indicates if DAG synchronization is required.
         needs_sync: bool,
     },
 }
@@ -79,19 +109,28 @@ pub enum NetAuthMessage {
 /// Request/Response message for /pds/blob/1.0
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlobNetRequest {
+    /// Requests a binary large object by identifier.
     Get {
+        /// Authorized session token.
         session_token: [u8; 32],
+        /// Identifier of the requested blob.
         blob_id: BlobId,
     },
 }
 
+/// Response to a blob transfer request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlobNetResponse {
+    /// Requested blob was found.
     Found {
+        /// Metadata descriptor of the blob.
         descriptor: BlobDescriptor,
+        /// Binary payload content of the blob.
         data: Vec<u8>,
     },
+    /// Requested blob was not found.
     NotFound(BlobId),
+    /// Request session token is invalid or expired.
     Unauthorized,
 }
 
@@ -106,6 +145,7 @@ pub struct PdsNetworkNode {
 }
 
 impl PdsNetworkNode {
+    /// Creates a new network node binding to the sync and blob protocols.
     pub async fn new(
         dag: Arc<RwLock<HistoryDag>>,
         trust: Arc<RwLock<TrustManager>>,
@@ -125,14 +165,17 @@ impl PdsNetworkNode {
         })
     }
 
+    /// Returns the local endpoint identifier.
     pub fn endpoint_id(&self) -> EndpointId {
         self.endpoint.id()
     }
 
+    /// Returns a reference to the underlying network endpoint.
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
 
+    /// Returns the socket address of the endpoint.
     pub fn addr(&self) -> EndpointAddr {
         self.endpoint.addr()
     }

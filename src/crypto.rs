@@ -1,3 +1,5 @@
+//! Cryptographic primitives, key management, and ChaCha20-Poly1305 encryption.
+
 use crate::id::KeyId;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -5,41 +7,54 @@ use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Errors produced during cryptographic operations.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CryptoError {
+    /// Encryption operation failed.
     #[error("Encryption failure: {0}")]
     EncryptionFailed(String),
+    /// Decryption operation failed.
     #[error("Decryption failure: {0}")]
     DecryptionFailed(String),
+    /// Referenced encryption key was not found.
     #[error("Key not found: {0}")]
     KeyNotFound(KeyId),
+    /// Encryption key length is invalid.
     #[error("Invalid key length: expected 32 bytes")]
     InvalidKeyLength,
 }
 
+/// Encrypted payload with its key identifier and initialization nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptedData {
+    /// Identifier of the encryption key.
     pub key_id: KeyId,
+    /// 12-byte initialization nonce.
     pub nonce: [u8; 12],
+    /// Encrypted ciphertext bytes.
     pub ciphertext: Vec<u8>,
 }
 
+/// In-memory storage and manager for encryption keys.
 #[derive(Debug, Clone, Default)]
 pub struct KeyStore {
     keys: BTreeMap<KeyId, [u8; 32]>,
 }
 
 impl KeyStore {
+    /// Creates a new empty key store.
     pub fn new() -> Self {
         Self {
             keys: BTreeMap::new(),
         }
     }
 
+    /// Inserts a 32-byte key associated with the specified key identifier.
     pub fn insert_key(&mut self, key_id: KeyId, key_bytes: [u8; 32]) {
         self.keys.insert(key_id, key_bytes);
     }
 
+    /// Generates a new random 32-byte key and stores it.
     pub fn generate_key(&mut self) -> (KeyId, [u8; 32]) {
         let key_id = KeyId::new();
         let mut key_bytes = [0u8; 32];
@@ -48,10 +63,12 @@ impl KeyStore {
         (key_id, key_bytes)
     }
 
+    /// Retrieves a reference to a 32-byte key by its identifier if present.
     pub fn get_key(&self, key_id: &KeyId) -> Option<&[u8; 32]> {
         self.keys.get(key_id)
     }
 
+    /// Encrypts plaintext bytes using a random nonce and the specified key.
     pub fn encrypt(&self, key_id: &KeyId, plaintext: &[u8]) -> Result<EncryptedData, CryptoError> {
         let key_bytes = self
             .get_key(key_id)
@@ -73,6 +90,7 @@ impl KeyStore {
         })
     }
 
+    /// Encrypts plaintext bytes using a specific nonce and key.
     pub fn encrypt_with_nonce(
         &self,
         key_id: &KeyId,
@@ -96,6 +114,7 @@ impl KeyStore {
         })
     }
 
+    /// Decrypts ciphertext bytes using the key identifier and nonce in the payload.
     pub fn decrypt(&self, encrypted: &EncryptedData) -> Result<Vec<u8>, CryptoError> {
         let key_bytes = self
             .get_key(&encrypted.key_id)
