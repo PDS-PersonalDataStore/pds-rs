@@ -4,20 +4,28 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+/// Errors related to device trust management.
 #[derive(Debug, thiserror::Error)]
 pub enum TrustError {
+    /// Specified node identifier was not found.
     #[error("Node not found: {0}")]
     NotFound(String),
+    /// Specified node has been revoked.
     #[error("Node is revoked: {0}")]
     Revoked(String),
+    /// Signature verification failed.
     #[error("Invalid signature")]
     InvalidSignature,
+    /// Revocation secret does not match the expected hash.
     #[error("Invalid revocation secret: hash mismatch")]
     InvalidRevocationSecret,
+    /// PIN verification failed.
     #[error("Invalid PIN: PIN verification failed")]
     InvalidPin,
+    /// Pairing session has expired.
     #[error("Pairing session expired or not found")]
     SessionExpired,
+    /// Cryptographic operation failed.
     #[error("Cryptographic error: {0}")]
     Crypto(String),
 }
@@ -25,27 +33,39 @@ pub enum TrustError {
 /// Represents a trusted node in the private PDS device network.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedNode {
+    /// Unique identifier of the node.
     pub node_id: String,
+    /// Human-readable name of the node.
     pub name: String,
+    /// Ed25519 public key bytes.
     pub public_key: [u8; 32],
     /// SHA256(revocation_secret)
     pub revocation_hash: [u8; 32],
+    /// Indicates if the node has been revoked.
     pub is_revoked: bool,
+    /// Timestamp when the node was registered.
     pub created_at: DateTime<Utc>,
+    /// Optional timestamp when the node was revoked.
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// Event exchanged between trusted nodes to propagate trust or revocations outside the DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TrustEvent {
+    /// A new node was authorized.
     NodeAuthorized {
+        /// Authorized node record.
         node: TrustedNode,
         /// The revocation secret is only sent to other authorized nodes (never to the newly paired node itself)
         revocation_secret: Option<[u8; 32]>,
+        /// Identifier of the authorizing node.
         approved_by_node_id: String,
+        /// Signature over the canonical authorization bytes.
         signature: Vec<u8>,
     },
+    /// A node was revoked.
     NodeRevoked {
+        /// Identifier of the revoked node.
         node_id: String,
         /// Pre-generated one-time revocation secret satisfying SHA256(secret) == revocation_hash
         revocation_secret: [u8; 32],
@@ -55,9 +75,13 @@ pub enum TrustEvent {
 /// Pairing session information created by Node A when scanning Node B's PIN.
 #[derive(Debug, Clone)]
 pub struct PairingSession {
+    /// Unique identifier of the pairing session.
     pub session_id: String,
+    /// Ed25519 public key of the peer node.
     pub peer_public_key: [u8; 32],
+    /// Expected hash of the shared PIN.
     pub expected_pin_hash: [u8; 32],
+    /// Timestamp when the session expires.
     pub expires_at: DateTime<Utc>,
 }
 
@@ -72,6 +96,7 @@ pub struct TrustManager {
 }
 
 impl TrustManager {
+    /// Creates a new trust manager for the local node.
     pub fn new(local_node_id: impl Into<String>, signing_key: SigningKey) -> Self {
         let local_node_id = local_node_id.into();
         let pub_bytes = signing_key.verifying_key().to_bytes();
@@ -97,32 +122,39 @@ impl TrustManager {
         mgr
     }
 
+    /// Returns the local node identifier.
     pub fn local_node_id(&self) -> &str {
         &self.local_node_id
     }
 
+    /// Returns the local public key bytes.
     pub fn public_key(&self) -> [u8; 32] {
         self.signing_key.verifying_key().to_bytes()
     }
 
+    /// Checks if a public key belongs to an active trusted node.
     pub fn is_trusted(&self, public_key: &[u8; 32]) -> bool {
         self.nodes
             .values()
             .any(|n| &n.public_key == public_key && !n.is_revoked)
     }
 
+    /// Retrieves a trusted node by identifier.
     pub fn get_node(&self, node_id: &str) -> Option<&TrustedNode> {
         self.nodes.get(node_id)
     }
 
+    /// Returns all registered trusted nodes.
     pub fn nodes(&self) -> &BTreeMap<String, TrustedNode> {
         &self.nodes
     }
 
+    /// Returns all active pairing sessions.
     pub fn active_pairings(&self) -> &BTreeMap<String, PairingSession> {
         &self.active_pairings
     }
 
+    /// Registers an existing trusted node.
     pub fn register_trusted_node(&mut self, node: TrustedNode) {
         self.nodes.insert(node.node_id.clone(), node);
     }

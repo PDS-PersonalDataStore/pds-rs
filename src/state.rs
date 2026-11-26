@@ -1,3 +1,5 @@
+//! Materialized dataset state projection.
+
 use crate::change::Change;
 use crate::dag::HistoryDag;
 use crate::entity::Entity;
@@ -6,13 +8,17 @@ use crate::operation::Operation;
 use crate::relation::Relation;
 use std::collections::BTreeMap;
 
+/// Represents the in-memory materialized state of a dataset.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DatasetState {
+    /// Map of entity identifiers to entities.
     pub entities: BTreeMap<EntityId, Entity>,
+    /// Map of relation identifiers to relations.
     pub relations: BTreeMap<RelationId, Relation>,
 }
 
 impl DatasetState {
+    /// Creates a new empty dataset state.
     pub fn new() -> Self {
         Self {
             entities: BTreeMap::new(),
@@ -20,6 +26,7 @@ impl DatasetState {
         }
     }
 
+    /// Applies a single operation to the dataset state.
     pub fn apply_operation(&mut self, op: &Operation) {
         match op {
             Operation::CreateEntity {
@@ -83,12 +90,14 @@ impl DatasetState {
         }
     }
 
+    /// Applies all operations from a change to the dataset state.
     pub fn apply_change(&mut self, change: &Change) {
         for op in &change.operations {
             self.apply_operation(op);
         }
     }
 
+    /// Reconstructs the dataset state from the history DAG in topological order.
     pub fn from_dag(dag: &HistoryDag) -> Self {
         let mut state = Self::new();
         for change in dag.topological_order() {

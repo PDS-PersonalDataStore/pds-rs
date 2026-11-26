@@ -8,56 +8,89 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Errors related to binary large object storage.
 #[derive(Debug, thiserror::Error)]
 pub enum BlobError {
+    /// Underlying input/output error.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+    /// Content hash does not match expected hash.
     #[error("Integrity check failed. Expected hash: {expected}, got: {actual}")]
-    IntegrityMismatch { expected: String, actual: String },
+    IntegrityMismatch {
+        /// Expected SHA-256 hash.
+        expected: String,
+        /// Computed SHA-256 hash.
+        actual: String,
+    },
+    /// Blob identifier was not found in the store.
     #[error("Blob not found: {0}")]
     NotFound(BlobId),
+    /// Cryptographic operation failed.
     #[error("Cryptographic error: {0}")]
     Crypto(#[from] CryptoError),
+    /// Keystore is required to read encrypted blob data.
     #[error("Blob is encrypted and requires a keystore")]
     EncryptedBlobRequiresKeystore,
 }
 
+/// Encryption scheme applied to a blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "mode", content = "details")]
 pub enum BlobEncryption {
+    /// Blob is stored without encryption.
     #[default]
     Plaintext,
+    /// Blob is encrypted with symmetric encryption.
     Encrypted {
+        /// Identifier of the encryption key.
         key_id: KeyId,
+        /// Base nonce used for encryption.
         nonce: [u8; 12],
+        /// Original size of the plaintext data in bytes.
         plaintext_size_bytes: u64,
     },
 }
 
+/// Minimum chunk size for content-defined chunking (16 KiB).
 pub const FASTCDC_MIN_SIZE: usize = 16 * 1024; // 16 KiB
+/// Target average chunk size for content-defined chunking (128 KiB).
 pub const FASTCDC_AVG_SIZE: usize = 128 * 1024; // 128 KiB
+/// Maximum chunk size for content-defined chunking (1 MiB).
 pub const FASTCDC_MAX_SIZE: usize = 1024 * 1024; // 1 MiB
+/// Minimum file size threshold for chunking (1 MiB).
 pub const CHUNKING_THRESHOLD_BYTES: usize = 1024 * 1024; // > 1 MiB
 
+/// Metadata describing an individual chunk of a chunked blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobChunk {
+    /// SHA-256 hash of this chunk.
     pub sha256: String,
+    /// Byte offset of the chunk within the blob.
     pub offset: u64,
+    /// Size of the chunk in bytes.
     pub length: u64,
 }
 
+/// Descriptor containing metadata for a stored binary large object.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobDescriptor {
+    /// Unique identifier of the blob.
     pub id: BlobId,
+    /// SHA-256 hash of the complete blob content.
     pub sha256: String,
+    /// Total size of the blob in bytes.
     pub size_bytes: u64,
+    /// Optional MIME type string.
     pub mime_type: Option<String>,
+    /// Encryption details of the blob.
     #[serde(default)]
     pub encryption: BlobEncryption,
+    /// Optional list of chunk descriptors if the blob is chunked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunks: Option<Vec<BlobChunk>>,
 }
 
+/// Content-addressed storage engine for binary large objects.
 #[derive(Debug, Clone)]
 pub struct BlobStore {
     root_dir: PathBuf,
@@ -65,6 +98,7 @@ pub struct BlobStore {
 }
 
 impl BlobStore {
+    /// Creates a new blob store at the specified root directory.
     pub fn new(root_dir: impl AsRef<Path>) -> io::Result<Self> {
         let root_dir = root_dir.as_ref().to_path_buf();
         fs::create_dir_all(&root_dir)?;
@@ -107,6 +141,7 @@ impl BlobStore {
         Ok(())
     }
 
+    /// Computes the hexadecimal SHA-256 hash of a byte slice.
     pub fn compute_sha256(data: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(data);
@@ -143,6 +178,7 @@ impl BlobStore {
         Ok(data)
     }
 
+    /// Derives a deterministic nonce for a specific chunk index.
     pub fn derive_chunk_nonce(base_nonce: &[u8; 12], chunk_index: u32) -> [u8; 12] {
         let mut chunk_nonce = *base_nonce;
         let index_bytes = chunk_index.to_le_bytes();
@@ -152,6 +188,7 @@ impl BlobStore {
         chunk_nonce
     }
 
+    /// Stores raw data in the blob store as plaintext.
     pub fn put(
         &mut self,
         id: BlobId,
@@ -198,6 +235,7 @@ impl BlobStore {
         Ok(descriptor)
     }
 
+    /// Encrypts and stores data in the blob store.
     pub fn put_encrypted(
         &mut self,
         id: BlobId,
@@ -280,6 +318,7 @@ impl BlobStore {
         }
     }
 
+    /// Stores a pre-computed descriptor and matching payload data.
     pub fn put_descriptor_and_data(
         &mut self,
         descriptor: BlobDescriptor,
@@ -299,10 +338,12 @@ impl BlobStore {
         Ok(())
     }
 
+    /// Retrieves the descriptor for a blob identifier.
     pub fn get_descriptor(&self, id: &BlobId) -> Option<&BlobDescriptor> {
         self.descriptors.get(id)
     }
 
+    /// Reads the raw stored payload data for a blob.
     pub fn get_raw_data(&self, id: &BlobId) -> Result<Vec<u8>, BlobError> {
         let descriptor = self.descriptors.get(id).ok_or(BlobError::NotFound(*id))?;
 
@@ -325,6 +366,7 @@ impl BlobStore {
         }
     }
 
+    /// Reads the plaintext data for an unencrypted blob.
     pub fn get_data(&self, id: &BlobId) -> Result<Vec<u8>, BlobError> {
         let descriptor = self.descriptors.get(id).ok_or(BlobError::NotFound(*id))?;
         match descriptor.encryption {
@@ -333,6 +375,7 @@ impl BlobStore {
         }
     }
 
+    /// Reads and decrypts the data for an encrypted blob.
     pub fn get_decrypted_data(
         &self,
         id: &BlobId,
