@@ -1035,6 +1035,43 @@ impl PdsNodeDaemon {
             let _ = accept_handle.await;
         })
     }
+
+    /// Spawns a background task that periodically flushes pending changes to SQLite materialized tables.
+    pub fn start_materialization_worker(
+        self: Arc<Self>,
+        poll_interval_millis: u64,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+                poll_interval_millis.max(10),
+            ));
+
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            // On shutdown, flush remaining materializations
+                            let mut storage = self.storage.write().await;
+                            let _ = storage.materialize_all();
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        let has_pending = {
+                            let storage = self.storage.read().await;
+                            storage.pending_materialization_count() > 0
+                        };
+
+                        if has_pending {
+                            let mut storage = self.storage.write().await;
+                            let _ = storage.materialize_pending_batch(50);
+                        }
+                    }
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]
