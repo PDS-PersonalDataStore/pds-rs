@@ -13,179 +13,304 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Request message sent by an IPC client.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", content = "payload")]
 pub enum IpcRequest {
+    /// Initiates client authentication handshake.
     Hello(ClientHello),
+    /// Submits authentication signature response.
     Authenticate(ClientAuth),
+    /// Retrieves an entity by identifier.
     GetEntity {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the entity to fetch.
         entity_id: EntityId,
     },
+    /// Creates a new entity with properties.
     CreateEntity {
+        /// Active session identifier.
         session_id: String,
+        /// Optional schema type of the entity.
         entity_type: Option<String>,
+        /// Initial property list.
         properties: Vec<(PropertyName, PropertyValue)>,
     },
+    /// Updates properties of an existing entity.
     UpdateEntity {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the entity to update.
         entity_id: EntityId,
+        /// Properties to add or update.
         set_properties: Vec<(PropertyName, PropertyValue)>,
+        /// Names of properties to remove.
         remove_properties: Vec<PropertyName>,
     },
+    /// Deletes an entity.
     DeleteEntity {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the entity to delete.
         entity_id: EntityId,
     },
+    /// Retrieves a relation by identifier.
     GetRelation {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the relation to fetch.
         relation_id: RelationId,
     },
+    /// Creates a new relation.
     CreateRelation {
+        /// Active session identifier.
         session_id: String,
+        /// Type category of the relation.
         relation_type: String,
+        /// Participating members.
         #[serde(default)]
         members: Vec<RelationMember>,
+        /// Optional source entity identifier.
         #[serde(default)]
         source: Option<EntityId>,
+        /// Optional target entity identifier.
         #[serde(default)]
         target: Option<EntityId>,
     },
+    /// Updates properties of an existing relation.
     UpdateRelation {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the relation to update.
         relation_id: RelationId,
+        /// Properties to add or update.
         set_properties: Vec<(PropertyName, PropertyValue)>,
+        /// Names of properties to remove.
         remove_properties: Vec<PropertyName>,
     },
+    /// Deletes a relation.
     DeleteRelation {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the relation to delete.
         relation_id: RelationId,
     },
+    /// Retrieves binary large object content.
     GetBlob {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the blob to fetch.
         blob_id: BlobId,
     },
+    /// Retrieves metadata descriptor for a blob.
     GetBlobDescriptor {
+        /// Active session identifier.
         session_id: String,
+        /// Identifier of the blob.
         blob_id: BlobId,
     },
+    /// Stores raw binary large object content.
     PutBlob {
+        /// Active session identifier.
         session_id: String,
+        /// Payload data bytes.
         data: Vec<u8>,
+        /// Optional MIME media type string.
         media_type: Option<String>,
     },
+    /// Encrypts and stores binary large object content.
     PutEncryptedBlob {
+        /// Active session identifier.
         session_id: String,
+        /// Plaintext payload bytes.
         plaintext: Vec<u8>,
+        /// Encryption key identifier.
         key_id: KeyId,
+        /// Optional MIME media type string.
         media_type: Option<String>,
     },
+    /// Polls for changes starting from an optional change identifier.
     PollChanges {
+        /// Active session identifier.
         session_id: String,
+        /// Optional lower bound change identifier.
         since_change_id: Option<ChangeId>,
+        /// Optional maximum number of changes to return.
         limit: Option<usize>,
     },
+    /// Retrieves pending changes beyond the client cursor.
     GetPendingChanges {
+        /// Active session identifier.
         session_id: String,
+        /// Optional maximum number of changes to return.
         limit: Option<usize>,
     },
+    /// Acknowledges processed changes up to a change identifier.
     AcknowledgeChanges {
+        /// Active session identifier.
         session_id: String,
+        /// Last processed change identifier.
         change_id: ChangeId,
     },
+    /// Retrieves the current stored cursor for this client.
     GetClientCursor {
+        /// Active session identifier.
         session_id: String,
     },
+    /// Subscribes the session to notification topics.
     Subscribe {
+        /// Active session identifier.
         session_id: String,
+        /// Set of topics to subscribe to.
         topics: BTreeSet<EventTopic>,
     },
+    /// Unsubscribes the session from notification topics.
     Unsubscribe {
+        /// Active session identifier.
         session_id: String,
+        /// Set of topics to unsubscribe from.
         topics: BTreeSet<EventTopic>,
     },
+    /// Closes an active session.
     CloseSession {
+        /// Active session identifier to close.
         session_id: String,
     },
 }
 
+/// Subscription topic for asynchronous dataset events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EventTopic {
+    /// Topic for all dataset changes.
     AllChanges,
+    /// Topic for entity modifications.
     EntityChanges,
+    /// Topic for relation modifications.
     RelationChanges,
+    /// Topic for newly created binary large objects.
     BlobCreated,
 }
 
+/// Notification message pushed to subscribed IPC clients.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", content = "payload")]
 pub enum IpcNotification {
-    ChangeAppended { change_id: ChangeId, change: Change },
-    BlobAppended { descriptor: BlobDescriptor },
+    /// A new change was appended to the history graph.
+    ChangeAppended {
+        /// Identifier of the appended change.
+        change_id: ChangeId,
+        /// Appended change payload.
+        change: Change,
+    },
+    /// A new binary large object was stored.
+    BlobAppended {
+        /// Descriptor of the stored blob.
+        descriptor: BlobDescriptor,
+    },
 }
 
+/// Response message returned by the IPC server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "payload")]
 pub enum IpcResponse {
+    /// Authentication challenge returned to client.
     Challenge(AuthChallenge),
+    /// Successful authentication response.
     Authenticated(AuthSuccess),
+    /// Entity query response.
     Entity(Option<Entity>),
+    /// Entity creation confirmation with new identifier.
     EntityCreated(EntityId),
+    /// Entity update confirmation.
     EntityUpdated(EntityId),
+    /// Entity deletion confirmation.
     EntityDeleted(EntityId),
+    /// Relation query response.
     Relation(Option<Relation>),
+    /// Relation creation confirmation with new identifier.
     RelationCreated(RelationId),
+    /// Relation update confirmation.
     RelationUpdated(RelationId),
+    /// Relation deletion confirmation.
     RelationDeleted(RelationId),
+    /// Binary large object payload data.
     Blob(Vec<u8>),
+    /// Binary large object descriptor query response.
     BlobDescriptor(Option<BlobDescriptor>),
+    /// Binary large object creation confirmation.
     BlobCreated(BlobDescriptor),
+    /// Batch of history graph changes.
     Changes {
+        /// List of retrieved changes.
         changes: Vec<Change>,
+        /// Optional identifier of the latest change in batch.
         latest_change_id: Option<ChangeId>,
     },
+    /// Stored client cursor response.
     Cursor(Option<ChangeId>),
+    /// Change acknowledgment confirmation.
     ChangesAcknowledged {
+        /// Acknowledged change identifier.
         last_ack_change_id: ChangeId,
     },
+    /// Subscription confirmation.
     Subscribed {
+        /// Active subscribed topics.
         topics: BTreeSet<EventTopic>,
     },
+    /// Unsubscription confirmation.
     Unsubscribed {
+        /// Remaining subscribed topics.
         topics: BTreeSet<EventTopic>,
     },
+    /// Session closure confirmation.
     SessionClosed,
+    /// Error response containing error message.
     Error(String),
 }
 
+/// Active client IPC session.
 #[derive(Debug, Clone)]
 pub struct Session {
+    /// Unique session identifier token.
     pub session_id: String,
+    /// Authenticated client identifier.
     pub client_id: crate::auth::ClientId,
+    /// Permissions granted to this session.
     pub permissions: BTreeSet<Permission>,
+    /// Timestamp when the session expires.
     pub expires_at: DateTime<Utc>,
+    /// Optional process identifier of the client process.
     pub peer_pid: Option<u32>,
+    /// Negotiated API version.
     pub api_version: String,
+    /// Set of subscribed event topics.
     pub subscriptions: BTreeSet<EventTopic>,
+    /// Queue of pending notifications for this session.
     pub pending_notifications: Vec<IpcNotification>,
 }
 
+/// Manages active IPC client sessions and subscriptions.
 #[derive(Default)]
 pub struct IpcSessionManager {
     sessions: BTreeMap<String, Session>,
 }
 
 impl IpcSessionManager {
+    /// Creates an empty session manager.
     pub fn new() -> Self {
         Self {
             sessions: BTreeMap::new(),
         }
     }
 
+    /// Inserts a new session record.
     pub fn insert_session(&mut self, session: Session) {
         self.sessions.insert(session.session_id.clone(), session);
     }
 
+    /// Retrieves a session by identifier if it has not expired.
     pub fn get_session(&self, session_id: &str) -> Option<&Session> {
         let session = self.sessions.get(session_id)?;
         if Utc::now() > session.expires_at {
@@ -194,6 +319,7 @@ impl IpcSessionManager {
         Some(session)
     }
 
+    /// Retrieves a mutable session reference by identifier if it has not expired.
     pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut Session> {
         let session = self.sessions.get_mut(session_id)?;
         if Utc::now() > session.expires_at {
@@ -202,10 +328,12 @@ impl IpcSessionManager {
         Some(session)
     }
 
+    /// Removes and returns a session by identifier.
     pub fn remove_session(&mut self, session_id: &str) -> Option<Session> {
         self.sessions.remove(session_id)
     }
 
+    /// Verifies that an active session has the required permission.
     pub fn check_permission(
         &self,
         session_id: &str,
@@ -220,6 +348,7 @@ impl IpcSessionManager {
         Ok(())
     }
 
+    /// Subscribes a session to event topics.
     pub fn subscribe(
         &mut self,
         session_id: &str,
@@ -232,6 +361,7 @@ impl IpcSessionManager {
         Ok(session.subscriptions.clone())
     }
 
+    /// Unsubscribes a session from event topics.
     pub fn unsubscribe(
         &mut self,
         session_id: &str,
@@ -246,6 +376,7 @@ impl IpcSessionManager {
         Ok(session.subscriptions.clone())
     }
 
+    /// Publishes an event notification to matching subscribed sessions.
     pub fn publish_notification(&mut self, topic: EventTopic, notification: IpcNotification) {
         let now = Utc::now();
         for session in self.sessions.values_mut() {
@@ -259,6 +390,7 @@ impl IpcSessionManager {
         }
     }
 
+    /// Drains and returns all queued notifications for a session.
     pub fn drain_notifications(&mut self, session_id: &str) -> Vec<IpcNotification> {
         if let Some(session) = self.get_session_mut(session_id) {
             std::mem::take(&mut session.pending_notifications)
@@ -268,13 +400,18 @@ impl IpcSessionManager {
     }
 }
 
+/// Server request dispatcher that handles authenticated IPC requests.
 pub struct IpcServerHandler<'a> {
+    /// Persistent storage reference for changes and cursors.
     pub storage: &'a mut DiskStorage,
+    /// Active sessions manager.
     pub sessions: &'a mut IpcSessionManager,
+    /// Client authenticator managing keys and registrations.
     pub authenticator: &'a mut crate::auth::ClientAuthenticator,
 }
 
 impl<'a> IpcServerHandler<'a> {
+    /// Creates a new IPC server request handler.
     pub fn new(
         storage: &'a mut DiskStorage,
         sessions: &'a mut IpcSessionManager,
@@ -287,6 +424,7 @@ impl<'a> IpcServerHandler<'a> {
         }
     }
 
+    /// Handles an incoming IPC request and returns the response.
     pub fn handle_request(&mut self, request: IpcRequest, peer_pid: Option<u32>) -> IpcResponse {
         match request {
             IpcRequest::Hello(hello) => match self.authenticator.handle_client_hello(&hello) {
@@ -785,6 +923,7 @@ impl<'a> IpcServerHandler<'a> {
         }
     }
 
+    /// Appends a change to storage and broadcasts notifications to subscribed sessions.
     pub fn append_change_and_notify(
         &mut self,
         change: Change,
@@ -823,20 +962,27 @@ impl<'a> IpcServerHandler<'a> {
     }
 }
 
+/// Errors returned by IPC client operations.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum IpcClientError {
+    /// Authentication handshake failed.
     #[error("Authentication failed: {0}")]
     AuthFailed(String),
+    /// Request requires an active authenticated session.
     #[error("Session not established. Complete handshake first.")]
     NoActiveSession,
+    /// Server returned an error message.
     #[error("Server returned error: {0}")]
     ServerError(String),
+    /// Relation creation error.
     #[error("Relation error: {0}")]
     Relation(#[from] crate::relation::RelationError),
+    /// Server returned an unexpected response variant.
     #[error("Unexpected server response")]
     UnexpectedResponse,
 }
 
+/// Helper client for constructing signed IPC requests and processing responses.
 pub struct PdsIpcClient {
     client_id: crate::auth::ClientId,
     signing_key: ed25519_dalek::SigningKey,
@@ -846,6 +992,7 @@ pub struct PdsIpcClient {
 }
 
 impl PdsIpcClient {
+    /// Creates a new IPC client helper.
     pub fn new(client_id: crate::auth::ClientId, signing_key: ed25519_dalek::SigningKey) -> Self {
         Self {
             client_id,
@@ -856,23 +1003,28 @@ impl PdsIpcClient {
         }
     }
 
+    /// Sets the advertised API version.
     pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
         self.api_version = version.into();
         self
     }
 
+    /// Returns the client identifier.
     pub fn client_id(&self) -> crate::auth::ClientId {
         self.client_id
     }
 
+    /// Returns the active session identifier, if authenticated.
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
 
+    /// Returns the negotiated API version, if authenticated.
     pub fn negotiated_version(&self) -> Option<&str> {
         self.negotiated_version.as_deref()
     }
 
+    /// Generates the initial handshake ClientHello request.
     pub fn start_handshake(&self, capabilities: Vec<String>) -> IpcRequest {
         let mut nonce = [0u8; 32];
         rand::rng().fill_bytes(&mut nonce);
@@ -880,6 +1032,7 @@ impl PdsIpcClient {
         IpcRequest::Hello(hello)
     }
 
+    /// Generates the signed authentication response for a challenge.
     pub fn handle_challenge(&mut self, challenge: &AuthChallenge) -> IpcRequest {
         let sig = crate::auth::create_client_auth_signature(&self.signing_key, challenge);
         IpcRequest::Authenticate(ClientAuth {
@@ -888,17 +1041,20 @@ impl PdsIpcClient {
         })
     }
 
+    /// Stores session state upon successful authentication.
     pub fn handle_auth_success(&mut self, success: &AuthSuccess) {
         self.session_id = Some(success.session_id.clone());
         self.negotiated_version = Some(success.api_version.clone());
     }
 
+    /// Returns the active session identifier or returns NoActiveSession error.
     pub fn require_session(&self) -> Result<&str, IpcClientError> {
         self.session_id
             .as_deref()
             .ok_or(IpcClientError::NoActiveSession)
     }
 
+    /// Builds a GetEntity request.
     pub fn get_entity_request(&self, entity_id: EntityId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::GetEntity {
@@ -907,6 +1063,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a CreateEntity request.
     pub fn create_entity_request(
         &self,
         entity_type: Option<String>,
@@ -920,6 +1077,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds an UpdateEntity request.
     pub fn update_entity_request(
         &self,
         entity_id: EntityId,
@@ -935,6 +1093,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a DeleteEntity request.
     pub fn delete_entity_request(&self, entity_id: EntityId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::DeleteEntity {
@@ -943,6 +1102,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a GetRelation request.
     pub fn get_relation_request(
         &self,
         relation_id: RelationId,
@@ -954,6 +1114,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a binary CreateRelation request between source and target entities.
     pub fn create_relation_request(
         &self,
         relation_type: String,
@@ -967,6 +1128,7 @@ impl PdsIpcClient {
         self.create_multimember_relation_request(relation_type, members)
     }
 
+    /// Builds a multi-member CreateRelation request.
     pub fn create_multimember_relation_request(
         &self,
         relation_type: String,
@@ -993,6 +1155,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds an UpdateRelation request.
     pub fn update_relation_request(
         &self,
         relation_id: RelationId,
@@ -1008,6 +1171,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a DeleteRelation request.
     pub fn delete_relation_request(
         &self,
         relation_id: RelationId,
@@ -1019,6 +1183,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a GetBlob request.
     pub fn get_blob_request(&self, blob_id: BlobId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::GetBlob {
@@ -1027,6 +1192,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a GetBlobDescriptor request.
     pub fn get_blob_descriptor_request(
         &self,
         blob_id: BlobId,
@@ -1038,6 +1204,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a PutBlob request.
     pub fn put_blob_request(
         &self,
         data: Vec<u8>,
@@ -1051,6 +1218,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a PutEncryptedBlob request.
     pub fn put_encrypted_blob_request(
         &self,
         plaintext: Vec<u8>,
@@ -1066,6 +1234,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a PollChanges request.
     pub fn poll_changes_request(
         &self,
         since_change_id: Option<ChangeId>,
@@ -1079,6 +1248,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a GetPendingChanges request.
     pub fn get_pending_changes_request(
         &self,
         limit: Option<usize>,
@@ -1087,6 +1257,7 @@ impl PdsIpcClient {
         Ok(IpcRequest::GetPendingChanges { session_id, limit })
     }
 
+    /// Builds an AcknowledgeChanges request.
     pub fn ack_changes_request(&self, change_id: ChangeId) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::AcknowledgeChanges {
@@ -1095,11 +1266,13 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a GetClientCursor request.
     pub fn get_cursor_request(&self) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         Ok(IpcRequest::GetClientCursor { session_id })
     }
 
+    /// Builds a Subscribe request for event topics.
     pub fn subscribe_request<I>(&self, topics: I) -> Result<IpcRequest, IpcClientError>
     where
         I: IntoIterator<Item = EventTopic>,
@@ -1111,6 +1284,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds an Unsubscribe request for event topics.
     pub fn unsubscribe_request<I>(&self, topics: I) -> Result<IpcRequest, IpcClientError>
     where
         I: IntoIterator<Item = EventTopic>,
@@ -1122,6 +1296,7 @@ impl PdsIpcClient {
         })
     }
 
+    /// Builds a CloseSession request and clears the cached session identifier.
     pub fn close_session_request(&mut self) -> Result<IpcRequest, IpcClientError> {
         let session_id = self.require_session()?.to_string();
         self.session_id = None;

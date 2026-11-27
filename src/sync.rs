@@ -1,37 +1,51 @@
+//! History DAG synchronization protocol and synchronization engine.
+
 use crate::change::Change;
 use crate::dag::{DagError, HistoryDag};
 use crate::id::ChangeId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Protocol messages exchanged during history DAG synchronization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SyncMessage {
+    /// Request containing the set of known DAG head identifiers.
     SyncRequest {
+        /// Set of head change identifiers known to the requester.
         known_heads: BTreeSet<ChangeId>,
     },
+    /// Response containing missing changes and current head identifiers.
     SyncResponse {
+        /// List of changes missing from the requester.
         missing_changes: Vec<Change>,
+        /// Current head change identifiers of the responder.
         current_heads: BTreeSet<ChangeId>,
     },
 }
 
+/// Errors produced during history DAG synchronization.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
+    /// Failure when inserting a change into the DAG.
     #[error("DAG insertion error: {0}")]
     Dag(#[from] DagError),
+    /// Missing parent dependencies prevent change application.
     #[error("Missing dependencies during sync: {0:?}")]
     UnresolvedDependencies(Vec<ChangeId>),
 }
 
+/// Provides synchronization routines for history DAGs.
 pub struct SyncEngine;
 
 impl SyncEngine {
+    /// Creates a sync request message with the head identifiers of the given DAG.
     pub fn create_request(dag: &HistoryDag) -> SyncMessage {
         SyncMessage::SyncRequest {
             known_heads: dag.heads().clone(),
         }
     }
 
+    /// Computes missing changes and creates a sync response message.
     pub fn handle_request(dag: &HistoryDag, peer_heads: &BTreeSet<ChangeId>) -> SyncMessage {
         let mut missing_changes = Vec::new();
 
@@ -47,6 +61,7 @@ impl SyncEngine {
         }
     }
 
+    /// Applies received changes to the DAG in dependency order.
     pub fn apply_response(
         dag: &mut HistoryDag,
         missing_changes: Vec<Change>,

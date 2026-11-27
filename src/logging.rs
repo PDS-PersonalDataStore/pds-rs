@@ -1,3 +1,5 @@
+//! Provides logging management and dynamic filter reconfiguration.
+
 use std::sync::{OnceLock, RwLock};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
@@ -5,10 +7,13 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload::Handle;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// Errors produced during logging initialization and filter reload operations.
 #[derive(Debug, thiserror::Error)]
 pub enum LoggingError {
+    /// Occurs when a filter directive string is invalid.
     #[error("Parse filter error: {0}")]
     ParseFilter(#[from] tracing_subscriber::filter::ParseError),
+    /// Occurs when reloading the log subscriber fails.
     #[error("Reload error: {0}")]
     Reload(String),
 }
@@ -18,6 +23,7 @@ type ReloadHandle = Handle<EnvFilter, Registry>;
 static LOG_HANDLE: OnceLock<ReloadHandle> = OnceLock::new();
 static CURRENT_LEVEL: RwLock<String> = RwLock::new(String::new());
 
+/// Controls tracing initialization and runtime log level updates.
 pub struct LoggingManager;
 
 impl LoggingManager {

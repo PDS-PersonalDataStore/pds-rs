@@ -5,6 +5,18 @@ All notable changes to the Personal Data Store (PDS) project will be documented 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-11-27
+
+### Added
+- **SQLite Relational State Materialization & Schema Migrations**:
+  - Versioned SQLite migrations via `PRAGMA user_version`.
+  - Added relational materialized tables: `entities`, `entity_properties`, `relations`, `relation_members`, `relation_properties` with indexed column queries.
+  - Implemented `materialization_cursor` to track background flush progress across service restarts.
+  - Asynchronous background materialization worker in `Daemon` with graceful shutdown and queue flush.
+  - Read-your-own-writes consistency via pending queue pass (`get_entity_materialized`).
+- **Comprehensive API Documentation**:
+  - Full rustdoc documentation (`-D missing_docs`) across all public types, methods, fields, and functions in the crate.
+
 ## [1.2.0] - 2026-11-10
 
 ### Added

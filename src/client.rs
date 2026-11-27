@@ -1,3 +1,5 @@
+//! High-level client API providing secure access to entities, relations, and blobs.
+
 use crate::change::{Change, ChangeMetadata};
 use crate::entity::Entity;
 use crate::id::{ChangeId, EntityId, RelationId};
@@ -8,22 +10,30 @@ use crate::security::{AccessController, Permission, SecurityError};
 use crate::storage::{DiskStorage, StorageError};
 use crate::value::{PropertyName, PropertyValue};
 
+/// Errors produced during client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    /// Security permission check failed.
     #[error("Security error: {0}")]
     Security(#[from] SecurityError),
+    /// Storage operation failed.
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
+    /// Relation operation failed.
     #[error("Relation error: {0}")]
     Relation(#[from] crate::relation::RelationError),
+    /// Blob operation failed.
     #[error("Blob error: {0}")]
     Blob(#[from] crate::blob::BlobError),
+    /// Referenced entity was not found.
     #[error("Entity not found: {0}")]
     EntityNotFound(EntityId),
+    /// Referenced relation was not found.
     #[error("Relation not found: {0}")]
     RelationNotFound(RelationId),
 }
 
+/// Client interface for interacting with a PDS storage backend under permission checks.
 pub struct PdsClient<'a> {
     app_id: String,
     device_id: String,
@@ -32,6 +42,7 @@ pub struct PdsClient<'a> {
 }
 
 impl<'a> PdsClient<'a> {
+    /// Creates a new PDS client for a specific application and device.
     pub fn new(
         app_id: impl Into<String>,
         device_id: impl Into<String>,
@@ -46,18 +57,21 @@ impl<'a> PdsClient<'a> {
         }
     }
 
+    /// Retrieves an entity by its identifier if present and allowed.
     pub fn get_entity(&self, id: &EntityId) -> Result<Option<Entity>, ClientError> {
         self.security
             .check_permission(&self.app_id, &Permission::ReadEntities)?;
         Ok(self.storage.state().entities.get(id).cloned())
     }
 
+    /// Retrieves a relation by its identifier if present and allowed.
     pub fn get_relation(&self, id: &RelationId) -> Result<Option<Relation>, ClientError> {
         self.security
             .check_permission(&self.app_id, &Permission::ReadEntities)?;
         Ok(self.storage.state().relations.get(id).cloned())
     }
 
+    /// Creates a new entity with the specified type and properties.
     pub fn create_entity(
         &mut self,
         entity_type: Option<String>,
@@ -88,6 +102,7 @@ impl<'a> PdsClient<'a> {
         Ok(entity_id)
     }
 
+    /// Creates a binary relation between two entities.
     pub fn create_relation(
         &mut self,
         relation_type: impl Into<String>,
@@ -101,6 +116,7 @@ impl<'a> PdsClient<'a> {
         self.create_multimember_relation(relation_type, members)
     }
 
+    /// Creates a multi-member relation with specified participants and roles.
     pub fn create_multimember_relation(
         &mut self,
         relation_type: impl Into<String>,
@@ -128,6 +144,7 @@ impl<'a> PdsClient<'a> {
         Ok(relation_id)
     }
 
+    /// Stores an unencrypted binary blob with optional MIME media type.
     pub fn put_blob(
         &mut self,
         data: &[u8],
@@ -140,6 +157,7 @@ impl<'a> PdsClient<'a> {
         Ok(descriptor)
     }
 
+    /// Encrypts and stores a binary blob using the specified encryption key.
     pub fn put_encrypted_blob(
         &mut self,
         plaintext: &[u8],
@@ -159,6 +177,7 @@ impl<'a> PdsClient<'a> {
         Ok(descriptor)
     }
 
+    /// Retrieves the metadata descriptor of a binary blob if present.
     pub fn get_blob_descriptor(
         &self,
         id: &crate::id::BlobId,
@@ -168,6 +187,7 @@ impl<'a> PdsClient<'a> {
         Ok(self.storage.blobs().get_descriptor(id).cloned())
     }
 
+    /// Retrieves the byte content of a binary blob.
     pub fn get_blob(&self, id: &crate::id::BlobId) -> Result<Vec<u8>, ClientError> {
         self.security
             .check_permission(&self.app_id, &Permission::ReadBlobs)?;
@@ -175,6 +195,7 @@ impl<'a> PdsClient<'a> {
         Ok(data)
     }
 
+    /// Retrieves raw blob bytes without attempting automatic decryption.
     pub fn get_raw_blob(&self, id: &crate::id::BlobId) -> Result<Vec<u8>, ClientError> {
         self.security
             .check_permission(&self.app_id, &Permission::ReadBlobs)?;
@@ -182,6 +203,7 @@ impl<'a> PdsClient<'a> {
         Ok(data)
     }
 
+    /// Retrieves and decrypts a binary blob using the provided key store.
     pub fn get_decrypted_blob(
         &self,
         id: &crate::id::BlobId,

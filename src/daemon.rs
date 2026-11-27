@@ -1,3 +1,5 @@
+//! Top-level daemon coordinator for PDS node operations.
+
 use crate::auth::ClientAuthenticator;
 use crate::change::Change;
 use crate::dag::{DagError, HistoryDag};
@@ -16,14 +18,19 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Represents errors produced by the daemon service.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
+    /// Storage operation failed.
     #[error("Storage error: {0}")]
     Storage(#[from] StorageError),
+    /// Network synchronization failed.
     #[error("Network sync error: {0}")]
     Net(#[from] NetSyncError),
+    /// History DAG operation failed.
     #[error("DAG error: {0}")]
     Dag(#[from] DagError),
+    /// IPC communication failed.
     #[error("IPC error: {0}")]
     Ipc(String),
 }
@@ -697,10 +704,12 @@ impl PdsNodeDaemon {
         }
     }
 
+    /// Returns a shared reference to the trust manager.
     pub fn trust(&self) -> Arc<RwLock<TrustManager>> {
         self.trust.clone()
     }
 
+    /// Returns a reference to the node signing key.
     pub fn signing_key(&self) -> &SigningKey {
         &self.signing_key
     }
@@ -1024,6 +1033,43 @@ impl PdsNodeDaemon {
             }
 
             let _ = accept_handle.await;
+        })
+    }
+
+    /// Spawns a background task that periodically flushes pending changes to SQLite materialized tables.
+    pub fn start_materialization_worker(
+        self: Arc<Self>,
+        poll_interval_millis: u64,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+                poll_interval_millis.max(10),
+            ));
+
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            // On shutdown, flush remaining materializations
+                            let mut storage = self.storage.write().await;
+                            let _ = storage.materialize_all();
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        let has_pending = {
+                            let storage = self.storage.read().await;
+                            storage.pending_materialization_count() > 0
+                        };
+
+                        if has_pending {
+                            let mut storage = self.storage.write().await;
+                            let _ = storage.materialize_pending_batch(50);
+                        }
+                    }
+                }
+            }
         })
     }
 }

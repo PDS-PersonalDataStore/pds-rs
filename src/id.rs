@@ -1,3 +1,5 @@
+//! Identifier types for entities, relations, blobs, changes, and encryption keys.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -13,14 +15,17 @@ macro_rules! define_id {
         pub struct $name(pub Ulid);
 
         impl $name {
+            /// Generates a new random identifier with the current timestamp.
             pub fn new() -> Self {
                 Self(Ulid::generate())
             }
 
+            /// Creates an identifier from an existing ULID.
             pub fn from_ulid(ulid: Ulid) -> Self {
                 Self(ulid)
             }
 
+            /// Returns the underlying ULID value.
             pub fn as_ulid(&self) -> Ulid {
                 self.0
             }
@@ -60,11 +65,11 @@ macro_rules! define_id {
     };
 }
 
-define_id!(EntityId, "Unikalny identyfikator encji.");
-define_id!(RelationId, "Unikalny identyfikator relacji.");
-define_id!(BlobId, "Unikalny identyfikator zasobu binarnego.");
-define_id!(ChangeId, "Unikalny identyfikator jednostki zmiany.");
-define_id!(KeyId, "Unikalny identyfikator klucza szyfrowania E2EE.");
+define_id!(EntityId, "Unique identifier of an entity.");
+define_id!(RelationId, "Unique identifier of a relation.");
+define_id!(BlobId, "Unique identifier of a binary blob.");
+define_id!(ChangeId, "Unique identifier of a change.");
+define_id!(KeyId, "Unique identifier of an encryption key.");
 
 #[cfg(test)]
 mod tests {

@@ -56,43 +56,72 @@ enum OperationWire {
     },
 }
 
+/// Atomic operation applied to a dataset.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operation {
+    /// Creates a new entity.
     CreateEntity {
+        /// Identifier of the entity.
         entity_id: EntityId,
+        /// Optional schema type of the entity.
         entity_type: Option<String>,
     },
+    /// Sets a property on an entity.
     SetEntityProperty {
+        /// Identifier of the entity.
         entity_id: EntityId,
+        /// Name of the property.
         name: PropertyName,
+        /// Value to assign to the property.
         value: PropertyValue,
     },
+    /// Removes a property from an entity.
     RemoveEntityProperty {
+        /// Identifier of the entity.
         entity_id: EntityId,
+        /// Name of the property to remove.
         name: PropertyName,
     },
+    /// Deletes an entity.
     DeleteEntity {
+        /// Identifier of the entity to delete.
         entity_id: EntityId,
     },
+    /// Creates a relation between entities.
     CreateRelation {
+        /// Identifier of the relation.
         relation_id: RelationId,
+        /// Type category of the relation.
         relation_type: String,
+        /// Participating entity members and their roles.
         members: Vec<crate::relation::RelationMember>,
     },
+    /// Sets a property on a relation.
     SetRelationProperty {
+        /// Identifier of the relation.
         relation_id: RelationId,
+        /// Name of the property.
         name: PropertyName,
+        /// Value to assign to the property.
         value: PropertyValue,
     },
+    /// Removes a property from a relation.
     RemoveRelationProperty {
+        /// Identifier of the relation.
         relation_id: RelationId,
+        /// Name of the property to remove.
         name: PropertyName,
     },
+    /// Deletes a relation.
     DeleteRelation {
+        /// Identifier of the relation to delete.
         relation_id: RelationId,
     },
+    /// Represents an unrecognized forward-compatible operation.
     Unknown {
+        /// Action name of the operation.
         action: String,
+        /// Raw JSON payload of the operation.
         payload: serde_json::Value,
     },
 }

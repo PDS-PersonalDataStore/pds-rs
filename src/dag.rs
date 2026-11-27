@@ -1,15 +1,21 @@
+//! Directed acyclic graph (DAG) tracking dataset history and change causality.
+
 use crate::change::Change;
 use crate::id::ChangeId;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// Errors produced during history DAG operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DagError {
+    /// Referenced parent change is not present in the graph.
     #[error("Missing parent change: {0}")]
     MissingParent(ChangeId),
+    /// Change with this identifier is already present in the graph.
     #[error("Change already exists: {0}")]
     AlreadyExists(ChangeId),
 }
 
+/// Stores and orders historical changes in a directed acyclic graph.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryDag {
     changes: BTreeMap<ChangeId, Change>,
@@ -17,6 +23,7 @@ pub struct HistoryDag {
 }
 
 impl HistoryDag {
+    /// Creates a new empty history DAG.
     pub fn new() -> Self {
         Self {
             changes: BTreeMap::new(),
@@ -24,6 +31,7 @@ impl HistoryDag {
         }
     }
 
+    /// Inserts a change into the graph and updates graph heads.
     pub fn insert(&mut self, change: Change) -> Result<(), DagError> {
         let change_id = change.id;
         if self.changes.contains_key(&change_id) {
@@ -45,22 +53,27 @@ impl HistoryDag {
         Ok(())
     }
 
+    /// Retrieves a reference to a change by its identifier if present.
     pub fn get(&self, id: &ChangeId) -> Option<&Change> {
         self.changes.get(id)
     }
 
+    /// Returns the set of current head change identifiers.
     pub fn heads(&self) -> &BTreeSet<ChangeId> {
         &self.heads
     }
 
+    /// Returns the number of changes in the graph.
     pub fn len(&self) -> usize {
         self.changes.len()
     }
 
+    /// Returns true if the graph contains no changes.
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
 
+    /// Returns changes sorted in topological order.
     pub fn topological_order(&self) -> Vec<&Change> {
         let mut in_degree: BTreeMap<ChangeId, usize> = BTreeMap::new();
         let mut dependents: BTreeMap<ChangeId, Vec<ChangeId>> = BTreeMap::new();
